@@ -1,25 +1,33 @@
-var builder = WebApplication.CreateBuilder(args);
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 
-// Add services to the container.
-
-builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-var app = builder.Build();
-
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+public class Program
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    public static async Task Main()
+    {
+        // Create server instance (loads tilemaps automatically)
+        var pathfinder = new GridAStarPathfinder(new TilemapRepository("Resources/Tilemaps"));
+        var server = new WebSocketServer(pathfinder);
+
+        // Handle Ctrl+C to stop server gracefully
+        var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (s, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        Console.WriteLine("Starting WebSocket server...");
+        try
+        {
+            await server.StartAsync(cts.Token); // pass the cancellation token
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on Ctrl+C
+        }
+
+        Console.WriteLine("Server stopped.");
+    }
 }
-
-app.UseHttpsRedirection();
-
-app.UseAuthorization();
-
-app.MapControllers();
-
-app.Run();
