@@ -1,88 +1,67 @@
-﻿public class GridAStarPathfinder
-{
-    private readonly TilemapRepository _tilemap;
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 
-    public GridAStarPathfinder(TilemapRepository tilemap)
-    {
-        _tilemap = tilemap;
-    }
+public class GridAStarPathfinder
+{
+    private readonly TilemapRepository _tilemaps;
+    public GridAStarPathfinder(TilemapRepository t) { _tilemaps = t; }
 
     public List<TilePosition> FindPath(TilePosition start, TilePosition target)
     {
-        var openList = new List<Node>();
-        var closedSet = new HashSet<(int x, int y)>();
+        var open = new List<Node>();
+        var closed = new HashSet<(int, int)>();
+        var startNode = new Node(start, 0, H(start, target), null);
+        open.Add(startNode);
 
-        var startNode = new Node(start) { GCost = 0, HCost = ManhattanDistance(start, target) };
-        openList.Add(startNode);
-
-        while (openList.Count > 0)
+        while (open.Count > 0)
         {
-            Node current = openList.OrderBy(n => n.FCost).ThenBy(n => n.HCost).First();
+            var current = open.OrderBy(n => n.F).ThenBy(n => n.H).First();
+            if (current.Pos.X == target.X && current.Pos.Y == target.Y)
+                return Retrace(current);
 
-            if (current.Position.X == target.X && current.Position.Y == target.Y)
-                return RetracePath(current);
+            open.Remove(current);
+            closed.Add((current.Pos.X, current.Pos.Y));
 
-            openList.Remove(current);
-            closedSet.Add((current.Position.X, current.Position.Y));
-
-            foreach (var neighborPos in GetNeighbors(current.Position))
+            foreach (var npos in Neigh(current.Pos))
             {
-                if (closedSet.Contains((neighborPos.X, neighborPos.Y))) continue;
-                if (!_tilemap.IsWalkable(neighborPos)) continue;
+                if (closed.Contains((npos.X, npos.Y))) continue;
+                if (!_tilemaps.IsWalkable(npos)) continue;
 
-                int newGCost = current.GCost + 1;
-                Node existing = openList.FirstOrDefault(n => n.Position.X == neighborPos.X && n.Position.Y == neighborPos.Y);
-
+                int g = current.G + 1;
+                var existing = open.FirstOrDefault(n => n.Pos.X == npos.X && n.Pos.Y == npos.Y);
                 if (existing == null)
+                    open.Add(new Node(npos, g, H(npos, target), current));
+                else if (g < existing.G)
                 {
-                    openList.Add(new Node(neighborPos) { GCost = newGCost, HCost = ManhattanDistance(neighborPos, target), Parent = current });
-                }
-                else if (newGCost < existing.GCost)
-                {
-                    existing.GCost = newGCost;
+                    existing.G = g;
                     existing.Parent = current;
                 }
             }
         }
-
-        return new List<TilePosition>(); // No path found
+        return new List<TilePosition>(); // no path
     }
 
-    private List<TilePosition> GetNeighbors(TilePosition pos)
+    private static IEnumerable<TilePosition> Neigh(TilePosition p)
     {
-        return new List<TilePosition>
-        {
-            new TilePosition { X = pos.X + 1, Y = pos.Y },
-            new TilePosition { X = pos.X - 1, Y = pos.Y },
-            new TilePosition { X = pos.X, Y = pos.Y + 1 },
-            new TilePosition { X = pos.X, Y = pos.Y - 1 }
-        };
+        yield return new TilePosition { X = p.X + 1, Y = p.Y };
+        yield return new TilePosition { X = p.X - 1, Y = p.Y };
+        yield return new TilePosition { X = p.X, Y = p.Y + 1 };
+        yield return new TilePosition { X = p.X, Y = p.Y - 1 };
     }
+    private static int H(TilePosition a, TilePosition b) => Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
 
-    private int ManhattanDistance(TilePosition a, TilePosition b)
-        => Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
-
-    private List<TilePosition> RetracePath(Node endNode)
+    private static List<TilePosition> Retrace(Node end)
     {
-        var path = new List<TilePosition>();
-        Node current = endNode;
-        while (current != null)
-        {
-            path.Add(current.Position);
-            current = current.Parent;
-        }
-        path.Reverse();
-        return path;
+        var list = new List<TilePosition>();
+        for (var n = end; n != null; n = n.Parent) list.Add(n.Pos);
+        list.Reverse();
+        return list;
     }
 
     private class Node
     {
-        public TilePosition Position;
-        public int GCost;
-        public int HCost;
-        public int FCost => GCost + HCost;
-        public Node Parent;
-
-        public Node(TilePosition pos) { Position = pos; }
+        public TilePosition Pos; public int G; public int H; public int F => G + H; public Node Parent;
+        public Node(TilePosition p, int g, int h, Node parent) { Pos = p; G = g; H = h; Parent = parent; }
     }
 }

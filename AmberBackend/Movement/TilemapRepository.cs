@@ -1,59 +1,62 @@
-﻿public class TilemapRepository
-{
-    public TilemapData Walkable { get; private set; }
-    public TilemapData Obstacle { get; private set; }
+﻿using System.Collections.Generic;
+using System.IO;
+using Newtonsoft.Json;
 
-    private readonly string resourcePath;
+public class TilemapRepository
+{
+    private readonly HashSet<(int x, int y)> _walkable = new();
+    private readonly HashSet<(int x, int y)> _obstacle = new();
 
     public TilemapRepository(string resourcePath)
     {
-        this.resourcePath = resourcePath;
+        Load(Path.Combine(resourcePath, "walkableTiles.json"), _walkable);
+        Load(Path.Combine(resourcePath, "obstacleTiles.json"), _obstacle);
 
-        // Use full path to folder where JSONs live
-        Walkable = LoadTilemap("walkableTiles.json");
-        Obstacle = LoadTilemap("obstacleTiles.json");
+        System.Console.WriteLine($"[Tilemaps] Walkable={_walkable.Count} Obstacle={_obstacle.Count}");
     }
 
-    private TilemapData LoadTilemap(string fileName)
+    private static void Load(string path, HashSet<(int, int)> set)
     {
-        string path = Path.GetFullPath(Path.Combine(resourcePath, fileName));
-
         if (!File.Exists(path))
         {
-            Console.WriteLine($"Tilemap file not found: {path}");
-            return new TilemapData { Tiles = new List<TilePosition>() };
+            System.Console.WriteLine($"[Tilemaps] Missing: {path}");
+            return;
         }
 
-        string json = File.ReadAllText(path);
-
-        var options = new System.Text.Json.JsonSerializerOptions
+        var text = File.ReadAllText(path);
+        var data = JsonConvert.DeserializeObject<TilemapData>(text);
+        if (data?.Tiles != null)
         {
-            PropertyNameCaseInsensitive = true
-        };
-
-        var result = System.Text.Json.JsonSerializer.Deserialize<TilemapData>(json, options);
-
-        if (result == null)
-        {
-            Console.WriteLine($"Failed to deserialize tilemap: {path}");
-            return new TilemapData { Tiles = new List<TilePosition>() };
+            foreach (var t in data.Tiles)
+                set.Add((t.X, t.Y));
         }
-
-        return result;
     }
 
-
-
+    // NEW: permissive rule — if walkable set is sparse, “not obstacle” is enough.
     public bool IsWalkable(TilePosition pos)
     {
-        bool walkable = Walkable.Tiles.Exists(t => t.X == pos.X && t.Y == pos.Y);
-        bool blocked = Obstacle.Tiles.Exists(t => t.X == pos.X && t.Y == pos.Y);
-        return walkable && !blocked;
+        // hard block if obstacle
+        if (_obstacle.Contains((pos.X, pos.Y))) return false;
+
+        // if you painted a full whitelist of walkable tiles, enforce it
+        if (_walkable.Count > 0) return _walkable.Contains((pos.X, pos.Y));
+
+        // otherwise consider anything not in obstacle as walkable
+        return true;
     }
+
+    // Optional helpers for diagnostics
+    public bool IsObstacle(TilePosition pos) => _obstacle.Contains((pos.X, pos.Y));
+    public bool IsExplicitWalkable(TilePosition pos) => _walkable.Contains((pos.X, pos.Y));
 }
 
 public class TilemapData
 {
-    public List<TilePosition> Tiles { get; set; }
+    [JsonProperty("tiles")] public List<TilePosition> Tiles { get; set; }
 }
 
+//public class TilePosition
+//{
+//    [JsonProperty("x")] public int X { get; set; }
+//    [JsonProperty("y")] public int Y { get; set; }
+//}
