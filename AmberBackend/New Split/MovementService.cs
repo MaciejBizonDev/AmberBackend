@@ -48,6 +48,9 @@ public class MovementService
                     break;
                 }
             }
+            
+            // Update the dictionary with modified state
+            _entities[kvp.Key] = state;
         }
     }
 
@@ -67,12 +70,18 @@ public class MovementService
         if (!_entities.TryGetValue(playerId, out var state)) return;
         if (newPath == null || newPath.Count == 0) return;
 
-        // start from in-flight step if present
-        var pathStart = state.NextTargetCell ?? state.CurrentCell;
-        // newPath must already begin at pathStart (ensure in the caller/pathfinder)
-
+        // Pathfinder returns path starting from current position
+        // If already moving, the path starts from NextTargetCell
         state.QueuedPath.Clear();
-        foreach (var p in newPath) state.QueuedPath.Enqueue(p);
+        
+        // Only enqueue if there's at least 2 cells (skip first which is current/next target)
+        if (newPath.Count > 1)
+        {
+            for (int i = 1; i < newPath.Count; i++)
+            {
+                state.QueuedPath.Enqueue(newPath[i]);
+            }
+        }
 
         if (!state.NextTargetCell.HasValue && state.QueuedPath.Count > 0)
         {
@@ -80,10 +89,18 @@ public class MovementService
             state.Status = MovementStatus.Moving;
             state.ProgressToNext = 0f;
         }
+        
+        // Update the dictionary with modified state
+        _entities[playerId] = state;
     }
 
-    public EntityMovementState GetEntityState(string playerId)
+    public EntityMovementState? GetEntityState(string playerId)
         => _entities.TryGetValue(playerId, out var s) ? s : null;
+    
+    public void RemoveEntity(string playerId)
+    {
+        _entities.TryRemove(playerId, out _);
+    }
 
     public List<string> GetCellOccupants(TilePosition cell)
         => _entities.Where(kv =>
@@ -115,8 +132,8 @@ public class MovementService
 
 public class EntitySnapshot
 {
-    public string playerId { get; set; }
+    public string playerId { get; set; } = string.Empty;
     public int x { get; set; }
     public int y { get; set; }
-    public string status { get; set; } // "Idle" | "Moving"
+    public string status { get; set; } = "Idle"; // "Idle" | "Moving"
 }

@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -21,21 +22,29 @@ public class MovementWebSocketHandler
         var state = _movement.GetEntityState(playerId);
         if (state == null) return;
 
+        var entityState = state;
+        
         // Build path from the correct start (in-flight if any)
-        var start = state.NextTargetCell ?? state.CurrentCell;
+        var start = entityState.NextTargetCell ?? entityState.CurrentCell;
 
         var path = _pathfinder.FindPath(start, target); // Ensure your A* respects walkability
         if (path == null) path = new List<TilePosition>();
 
         _movement.RequestMove(playerId, path);
 
-        int tileDurationMs = (int)Math.Round(1000.0 / Math.Max(0.0001, state.Speed));
+        // Don't include the first cell in path sent to client
+        // Path starts from NextTargetCell which client is already moving to/at
+        var pathToClient = path.Count > 0 ? path.Skip(1).ToList() : path;
+
+        // Re-fetch state to get updated speed
+        entityState = _movement.GetEntityState(playerId);
+        int tileDurationMs = (int)Math.Round(1000.0 / Math.Max(0.0001, entityState.Speed));
 
         var response = new
         {
             type = "path",
             playerId,
-            path,
+            path = pathToClient,
             tileDurationMs
         };
 

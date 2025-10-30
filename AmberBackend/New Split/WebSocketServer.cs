@@ -24,14 +24,25 @@ public class WebSocketServer
 
         while (!ct.IsCancellationRequested)
         {
-            var ctx = await _listener.GetContextAsync();
-            if (!ctx.Request.IsWebSocketRequest)
+            try
             {
-                ctx.Response.StatusCode = 400; ctx.Response.Close(); continue;
-            }
+                var ctx = await _listener.GetContextAsync();
+                if (!ctx.Request.IsWebSocketRequest)
+                {
+                    ctx.Response.StatusCode = 400; 
+                    ctx.Response.Close(); 
+                    continue;
+                }
 
-            var wsctx = await ctx.AcceptWebSocketAsync(null);
-            _ = HandleClientAsync(wsctx.WebSocket);
+                var wsctx = await ctx.AcceptWebSocketAsync(null);
+                // Fire and forget with proper error handling
+                _ = Task.Run(async () => await HandleClientAsync(wsctx.WebSocket), ct);
+            }
+            catch (HttpListenerException ex)
+            {
+                if (ct.IsCancellationRequested) break;
+                Console.WriteLine($"HttpListener error: {ex.Message}");
+            }
         }
     }
 
@@ -40,16 +51,52 @@ public class WebSocketServer
         var buffer = new byte[4096];
         string currentPlayerId = null;
 
-        while (ws.State == WebSocketState.Open)
+        try
         {
-            var result = await ws.ReceiveAsync(buffer, CancellationToken.None);
-            if (result.MessageType != WebSocketMessageType.Text) continue;
+            while (ws.State == WebSocketState.Open)
+            {
+                try
+                {
+                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by client", CancellationToken.None);
+                        break;
+                    }
 
-            string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
-            var baseMsg = JsonConvert.DeserializeObject<TileClickMessage>(msg);
-            if (baseMsg == null || string.IsNullOrEmpty(baseMsg.type)) continue;
+                    if (result.MessageType != WebSocketMessageType.Text) 
+                        continue;
 
-            currentPlayerId = await _handlers.HandleMessageAsync(ws, baseMsg.type, msg, currentPlayerId);
+                    string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    var baseMsg = JsonConvert.DeserializeObject<BaseMessage>(msg);
+                    if (baseMsg == null || string.IsNullOrEmpty(baseMsg.type)) 
+                        continue;
+
+                    currentPlayerId = await _handlers.HandleMessageAsync(ws, baseMsg.type, msg, currentPlayerId);
+                }
+                catch (WebSocketException)
+                {
+                    // Client disconnected - exit loop
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in WebSocket handler: {ex.Message}");
+        }
+        finally
+        {
+            // Cleanup player on disconnect
+            if (ws.State != WebSocketState.Closed)
+            {
+                try
+                {
+                    await ws.CloseAsync(WebSocketCloseStatus.InternalServerError, "Connection closed", CancellationToken.None);
+                }
+                catch { /* Ignore */ }
+            }
         }
     }
 }
