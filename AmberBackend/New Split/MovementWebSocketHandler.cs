@@ -1,10 +1,6 @@
 ﻿using System.Collections.Generic;
-using System.Linq;
 using System.Net.WebSockets;
-using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 
 public class MovementWebSocketHandler
 {
@@ -20,36 +16,32 @@ public class MovementWebSocketHandler
     public async Task HandleTileClick(WebSocket ws, string playerId, TilePosition target)
     {
         var state = _movement.GetEntityState(playerId);
-        if (state == null) return;
+        if (state == null)
+        {
+            System.Console.WriteLine($"[MovementHandler] Unknown player: {playerId}");
+            return;
+        }
 
-        var entityState = state;
-        
-        // Build path from the correct start (in-flight if any)
-        var start = entityState.NextTargetCell ?? entityState.CurrentCell;
+        // Build path from correct start
+        var start = state.NextTargetCell ?? state.CurrentCell;
 
-        var path = _pathfinder.FindPath(start, target); // Ensure your A* respects walkability
-        if (path == null) path = new List<TilePosition>();
+        System.Console.WriteLine($"[MovementHandler] {playerId} clicked {target}. Calculating path from {start}");
 
+        var path = _pathfinder.FindPath(start, target);
+        if (path == null || path.Count == 0)
+        {
+            System.Console.WriteLine($"[MovementHandler] No path found for {playerId} to {target}");
+            return;
+        }
+
+        // NEW: Just queue the path - MovementService.Tick() will send commands
         _movement.RequestMove(playerId, path);
 
-        // Don't include the first cell in path sent to client
-        // Path starts from NextTargetCell which client is already moving to/at
-        var pathToClient = path.Count > 0 ? path.Skip(1).ToList() : path;
+        System.Console.WriteLine($"[MovementHandler] Queued path for {playerId}: {path.Count} tiles");
 
-        // Re-fetch state to get updated speed
-        entityState = _movement.GetEntityState(playerId);
-        int tileDurationMs = (int)Math.Round(1000.0 / Math.Max(0.0001, entityState.Speed));
+        // No need to send anything to client here!
+        // MovementService.Tick() will send move_command messages one tile at a time
 
-        var response = new
-        {
-            type = "path",
-            playerId,
-            path = pathToClient,
-            tileDurationMs
-        };
-
-        string json = JsonConvert.SerializeObject(response);
-        byte[] buffer = Encoding.UTF8.GetBytes(json);
-        await ws.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+        await Task.CompletedTask; // Keep async signature
     }
 }

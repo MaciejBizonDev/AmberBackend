@@ -1,27 +1,80 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-public class Program
+// EXAMPLE: How to wire up your server startup with timestamp-based system
+// This is NOT a complete file - adapt to your existing Program.cs or Startup.cs
+
+public class ServerStartupExample_Timestamp
 {
-    public static async Task Main()
+    public static async Task Main(string[] args)
     {
-        var movement = new MovementService();
-        var tilemaps = new TilemapRepository("Resources/Tilemaps");
-        var pathfinder = new GridAStarPathfinder(tilemaps);
-        var players = new PlayerService();
-        var moveHandler = new MovementWebSocketHandler(movement, pathfinder);
-        var handlers = new MessageHandlerService(players, movement, moveHandler);
-        var server = new WebSocketServer(handlers);
-
         var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
 
-        // 20 ticks/sec authoritative movement
-        var tickerTask = ServerTicker.RunAsync(movement, 20, cts.Token);
-        var serverTask = server.StartAsync(cts.Token);
-        
-        // Wait for either to complete (both run until cancellation)
-        await Task.WhenAny(tickerTask, serverTask);
+        // Initialize services
+        var tilemapRepository = new TilemapRepository("Resources/Tilemaps");
+        var pathfinder = new GridAStarPathfinder(tilemapRepository);
+        var playerService = new PlayerService();
+        var movementService = new MovementService(); // Now tracks server uptime
+        var movementWsHandler = new MovementWebSocketHandler(movementService, pathfinder);
+        var messageHandler = new MessageHandlerService(playerService, movementService, movementWsHandler);
+
+        // ✅ IMPORTANT: Pass movementService to WebSocketServer for time sync
+        var wsServer = new WebSocketServer(messageHandler, movementService);
+
+        var npcService = new NPCService(movementService, pathfinder);
+        // ✅ Event now has 5 parameters (added timestamp)
+        movementService.OnSendMoveCommand += async (playerId, from, to, duration, timestamp) =>
+        {
+            await wsServer.SendMoveCommandToPlayer(playerId, from, to, duration, timestamp);
+        };
+
+        // Spawn some NPCs
+        npcService.SpawnPatrolNPC("npc_guard_1", "Guard Alpha",
+            new TilePosition { X = 0, Y = 0 },
+            new TilePosition { X = 5, Y = 0 },
+            speed: 2f);
+
+        npcService.SpawnPatrolNPC("npc_guard_2", "Guard Beta",
+            new TilePosition { X = 0, Y = 3 },
+            new TilePosition { X = 5, Y = 3 },
+            speed: 2f);
+
+        Console.WriteLine("=== Timestamp-Based Movement System ===");
+        Console.WriteLine("Server sends commands with timestamps");
+        Console.WriteLine("Clients automatically adjust speed based on latency");
+        Console.WriteLine("No manual buffer management needed!");
+        Console.WriteLine("======================================");
+
+        // Start server tasks
+        var wsTask = wsServer.StartAsync(cts.Token);
+
+        // ✅ Recommended: 10-20 Hz tick rate is sufficient
+        // Lower tick rate = less bandwidth, still smooth with timestamps
+        var tickTask = ServerTicker.RunAsync(movementService, ticksPerSecond: 10, cts.Token);
+
+        // Also tick NPCs (for patrol logic)
+        var npcTickTask = Task.Run(async () =>
+        {
+            var lastTime = DateTime.UtcNow;
+            while (!cts.Token.IsCancellationRequested)
+            {
+                var now = DateTime.UtcNow;
+                var currentTime = (float)now.TimeOfDay.TotalSeconds;
+
+                npcService.Tick(currentTime);
+
+                await Task.Delay(100, cts.Token); // 10 Hz
+            }
+        }, cts.Token);
+
+        Console.WriteLine("Server started. Press Ctrl+C to stop.");
+        Console.CancelKeyPress += (s, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        await Task.WhenAll(wsTask, tickTask, npcTickTask);
     }
 }
