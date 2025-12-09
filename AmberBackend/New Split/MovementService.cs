@@ -53,7 +53,7 @@ public class MovementService
 
             if (isNPC)
             {
-                // === NPCs: Timestamp-based movement ===
+                // === NPCs: Timestamp-based movement (NO PAUSE between cells) ===
 
                 // Only send next command if we have path and not currently moving
                 if (state.Status == MovementStatus.Idle && state.QueuedPath.Count > 0)
@@ -83,15 +83,31 @@ public class MovementService
                     if (state.TimeSinceLastCommand >= state.CommandInterval)
                     {
                         // Movement complete on server
-                        state.Status = MovementStatus.Idle;
                         state.TimeSinceLastCommand = 0f;
 
-                        // Check if path is complete
-                        if (state.QueuedPath.Count == 0)
+                        // ✅ SEND NEXT COMMAND IMMEDIATELY (no pause!)
+                        if (state.QueuedPath.Count > 0)
                         {
+                            var fromCell = state.CurrentCell;
+                            var toCell = state.QueuedPath.Dequeue();
+
+                            float duration = state.CommandInterval;
+                            double timestamp = _serverUptime;
+
+                            // Broadcast next command immediately
+                            OnSendMoveCommand?.Invoke(playerId, fromCell, toCell, duration, timestamp);
+
+                            state.CurrentCell = toCell;
+                            state.Status = MovementStatus.Moving; // Stay moving!
+                            state.LastCommandSentTime = timestamp;
+                            state.TimeSinceLastCommand = 0f;
+                        }
+                        else
+                        {
+                            // Path complete - now go idle
+                            state.Status = MovementStatus.Idle;
                             OnEntityPathComplete?.Invoke(playerId, state.CurrentCell);
                         }
-                        // Next command will be sent on next tick (if path exists)
                     }
                 }
             }
@@ -188,6 +204,7 @@ public class MovementService
 
     /// <summary>
     /// Handle client acknowledgment that movement completed (players only).
+    /// ✅ FIXED: Send next command immediately (no pause!)
     /// </summary>
     public void OnClientMovementComplete(string entityId, TilePosition completedCell)
     {
@@ -198,7 +215,6 @@ public class MovementService
 
         // Reset waiting state
         state.WaitingForAcknowledgment = false;
-        state.Status = MovementStatus.Idle;
 
         // Verify position
         if (state.NextTargetCell.HasValue &&
@@ -220,8 +236,32 @@ public class MovementService
             state.TimeSinceLastCommand = 0f;
         }
 
+        // ✅ SEND NEXT COMMAND IMMEDIATELY (no pause!)
+        if (state.QueuedPath.Count > 0)
+        {
+            var toCell = state.QueuedPath.Dequeue();
+            float duration = state.CommandInterval;
+            double timestamp = _serverUptime;
+
+            // Send next command immediately
+            OnSendMoveCommand?.Invoke(entityId, state.CurrentCell, toCell, duration, timestamp);
+
+            state.NextTargetCell = toCell;
+            state.WaitingForAcknowledgment = true;
+            state.TimeSinceLastCommand = 0f;
+            state.Status = MovementStatus.Moving; // Stay moving!
+            state.LastCommandSentTime = timestamp;
+
+            Console.WriteLine($"[MovementService] Player {entityId} completed move to {completedCell}, immediately sending next command");
+        }
+        else
+        {
+            // Path complete - now go idle
+            state.Status = MovementStatus.Idle;
+            Console.WriteLine($"[MovementService] Player {entityId} completed move to {completedCell}, path finished");
+        }
+
         _entities[entityId] = state;
-        Console.WriteLine($"[MovementService] Player {entityId} completed move to {completedCell}, status reset to Idle");
     }
 
     public EntityMovementState? GetEntityState(string playerId)
