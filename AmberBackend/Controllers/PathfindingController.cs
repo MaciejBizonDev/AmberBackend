@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using AmberBackend.Movement;
+using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("api/pathfinding")]

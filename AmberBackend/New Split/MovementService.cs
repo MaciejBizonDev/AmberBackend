@@ -1,313 +1,186 @@
-﻿using System;
-using System.Collections.Concurrent;
+﻿using AmberBackend.Movement;
+using System;
 using System.Collections.Generic;
-using System.Linq;
 
-public struct TilePosition { public int X; public int Y; }
-
-public enum MovementStatus { Idle, Moving }
-
-public class EntityMovementState
-{
-    public TilePosition CurrentCell { get; set; }
-    public TilePosition? NextTargetCell { get; set; } = null;
-    public Queue<TilePosition> QueuedPath { get; } = new();
-    public MovementStatus Status { get; set; } = MovementStatus.Idle;
-    public float Speed { get; set; } = 4f;
-
-    // Command-based movement (players only)
-    public bool WaitingForAcknowledgment { get; set; } = false;
-    public float TimeSinceLastCommand { get; set; } = 0f;
-    public float CommandInterval => 1f / Speed;
-
-    // Timestamp tracking
-    public double LastCommandSentTime { get; set; } = 0.0;
-}
-
+/// <summary>
+/// Client-authoritative movement service.
+/// Receives position updates from clients and validates them.
+/// Broadcasts to other clients and can force corrections.
+/// </summary>
 public class MovementService
 {
-    private readonly ConcurrentDictionary<string, EntityMovementState> _entities = new();
-
-    // Server uptime for timestamps (seconds since server start)
-    private double _serverUptime = 0.0;
-
-    // Callback to send move commands to clients (now with timestamp!)
-    public event Action<string, TilePosition, TilePosition, float, double> OnSendMoveCommand;
-    public event Action<string, TilePosition> OnEntityPathComplete;
-
-    /// <summary>
-    /// Main tick loop - sends timestamped move commands for both players and NPCs.
-    /// Players: Wait for acknowledgment before sending next command.
-    /// NPCs: Send commands continuously with precise timestamps.
-    /// </summary>
-    public void Tick(float dt)
+    private class EntityState
     {
-        _serverUptime += dt;
-
-        foreach (var kvp in _entities)
-        {
-            var playerId = kvp.Key;
-            var state = kvp.Value;
-
-            bool isNPC = playerId.StartsWith("npc_");
-
-            if (isNPC)
-            {
-                // === NPCs: Timestamp-based movement (NO PAUSE between cells) ===
-
-                // Only send next command if we have path and not currently moving
-                if (state.Status == MovementStatus.Idle && state.QueuedPath.Count > 0)
-                {
-                    var fromCell = state.CurrentCell;
-                    var toCell = state.QueuedPath.Dequeue();
-
-                    float duration = state.CommandInterval;
-                    double timestamp = _serverUptime;
-
-                    // Broadcast command with timestamp
-                    OnSendMoveCommand?.Invoke(playerId, fromCell, toCell, duration, timestamp);
-
-                    // Update server state
-                    state.CurrentCell = toCell;
-                    state.Status = MovementStatus.Moving;
-                    state.LastCommandSentTime = timestamp;
-
-                    // Set timer for when this command should complete
-                    state.TimeSinceLastCommand = 0f;
-                }
-                else if (state.Status == MovementStatus.Moving)
-                {
-                    // Track time to know when movement completes server-side
-                    state.TimeSinceLastCommand += dt;
-
-                    if (state.TimeSinceLastCommand >= state.CommandInterval)
-                    {
-                        // Movement complete on server
-                        state.TimeSinceLastCommand = 0f;
-
-                        // ✅ SEND NEXT COMMAND IMMEDIATELY (no pause!)
-                        if (state.QueuedPath.Count > 0)
-                        {
-                            var fromCell = state.CurrentCell;
-                            var toCell = state.QueuedPath.Dequeue();
-
-                            float duration = state.CommandInterval;
-                            double timestamp = _serverUptime;
-
-                            // Broadcast next command immediately
-                            OnSendMoveCommand?.Invoke(playerId, fromCell, toCell, duration, timestamp);
-
-                            state.CurrentCell = toCell;
-                            state.Status = MovementStatus.Moving; // Stay moving!
-                            state.LastCommandSentTime = timestamp;
-                            state.TimeSinceLastCommand = 0f;
-                        }
-                        else
-                        {
-                            // Path complete - now go idle
-                            state.Status = MovementStatus.Idle;
-                            OnEntityPathComplete?.Invoke(playerId, state.CurrentCell);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // === Players: Command-based with acknowledgment ===
-                if (state.WaitingForAcknowledgment) continue;
-                if (state.QueuedPath.Count == 0) continue;
-
-                state.TimeSinceLastCommand += dt;
-
-                if (state.TimeSinceLastCommand >= state.CommandInterval)
-                {
-                    var toCell = state.QueuedPath.Dequeue();
-                    float duration = state.CommandInterval;
-                    double timestamp = _serverUptime;
-
-                    OnSendMoveCommand?.Invoke(playerId, state.CurrentCell, toCell, duration, timestamp);
-
-                    state.NextTargetCell = toCell;
-                    state.WaitingForAcknowledgment = true;
-                    state.TimeSinceLastCommand = 0f;
-                    state.Status = MovementStatus.Moving;
-                    state.LastCommandSentTime = timestamp;
-                }
-            }
-
-            _entities[playerId] = state;
-        }
+        public TilePosition CurrentPosition;
+        public DateTime LastUpdateTime;
+        public float Speed; // tiles per second
+        public Queue<TilePosition> RecentPositions = new(); // For cheat detection
     }
 
-    public void RegisterEntity(string playerId, TilePosition spawnCell, float speed = 4f)
+    private readonly Dictionary<string, EntityState> _entities = new();
+    private readonly TilemapRepository _tilemaps;
+    public event Action<string> OnEntityRemoved;
+    // Validation settings
+    private const float MaxSpeedMultiplier = 1.5f; // Allow 50% faster than normal (lag compensation)
+    private const int RecentPositionHistorySize = 10;
+
+    public event Action<string, TilePosition, TilePosition, float> OnEntityMove; // playerId, from, to, duration
+    public event Action<string, TilePosition, string> OnPositionCorrected; // playerId, correctedPos, reason
+
+    public MovementService(TilemapRepository tilemaps)
     {
-        var state = new EntityMovementState
+        _tilemaps = tilemaps;
+    }
+
+    /// <summary>
+    /// Broadcast NPC movement to all clients.
+    /// Called by NPCService when an NPC moves.
+    /// </summary>
+    public void BroadcastNpcMovement(string npcId, TilePosition from, TilePosition to, float duration)
+    {
+        // Also update the entity position in our tracking
+        if (_entities.TryGetValue(npcId, out var state))
         {
-            CurrentCell = spawnCell,
-            Status = MovementStatus.Idle,
-            Speed = speed,
-            WaitingForAcknowledgment = false,
-            TimeSinceLastCommand = 0f,
-            LastCommandSentTime = 0.0
+            state.CurrentPosition = to;
+            state.LastUpdateTime = DateTime.UtcNow;
+        }
+
+        // Trigger the event for WebSocketServer to broadcast
+        OnEntityMove?.Invoke(npcId, from, to, duration);
+
+        Console.WriteLine($"[MovementService] Broadcasting NPC movement: {npcId} {from} -> {to}");
+    }
+
+    public void RegisterEntity(string entityId, TilePosition spawnPosition, float speed = 4f)
+    {
+        _entities[entityId] = new EntityState
+        {
+            CurrentPosition = spawnPosition,
+            LastUpdateTime = DateTime.UtcNow,
+            Speed = speed
         };
-        _entities[playerId] = state;
 
-        Console.WriteLine($"[MovementService] Registered {playerId} at {spawnCell} with speed {speed}");
+        Console.WriteLine($"[MovementService] Registered {entityId} at {spawnPosition} (speed: {speed} tiles/sec)");
     }
 
     /// <summary>
-    /// Queue a path for command-based sending.
-    /// Commands will be sent one tile at a time by Tick().
+    /// Handle position update from client (client-authoritative).
+    /// Validates and broadcasts to other clients.
     /// </summary>
-    public void RequestMove(string entityId, List<TilePosition> newPath)
+    public void OnPositionUpdate(string entityId, TilePosition newPosition)
     {
-        if (!_entities.TryGetValue(entityId, out var state)) return;
-        if (newPath == null || newPath.Count == 0) return;
-
-        bool isNPC = entityId.StartsWith("npc_");
-
-        // Clear old path
-        state.QueuedPath.Clear();
-
-        // Determine where we'll be when this new path starts
-        TilePosition startCell;
-
-        if (isNPC)
+        if (!_entities.TryGetValue(entityId, out var state))
         {
-            // NPCs: Always use current cell
-            startCell = state.CurrentCell;
-        }
-        else
-        {
-            // Players: Use NextTargetCell if waiting for acknowledgment
-            startCell = (state.WaitingForAcknowledgment && state.NextTargetCell.HasValue)
-                ? state.NextTargetCell.Value
-                : state.CurrentCell;
+            Console.WriteLine($"[MovementService] Unknown entity: {entityId}");
+            return;
         }
 
-        // Filter out the start cell (pathfinder includes it)
-        var filteredPath = newPath.Where(cell =>
-            cell.X != startCell.X || cell.Y != startCell.Y
-        ).ToList();
+        var oldPosition = state.CurrentPosition;
+        var now = DateTime.UtcNow;
+        var timeDelta = (now - state.LastUpdateTime).TotalSeconds;
 
-        // Enqueue filtered path
-        foreach (var cell in filteredPath)
+        // Validation 1: Check if tile is walkable
+        if (!_tilemaps.IsWalkable(newPosition))
         {
-            state.QueuedPath.Enqueue(cell);
+            Console.WriteLine($"[MovementService] {entityId} tried to move to unwalkable tile {newPosition}");
+            OnPositionCorrected?.Invoke(entityId, oldPosition, "unwalkable_tile");
+            return;
         }
 
-        Console.WriteLine($"[MovementService] Queued path for {entityId}: {filteredPath.Count} tiles " +
-            $"(start: {startCell}, filtered from {newPath.Count})");
+        // Validation 2: Check speed (teleport detection)
+        int distance = Math.Abs(newPosition.X - oldPosition.X) + Math.Abs(newPosition.Y - oldPosition.Y);
+        float maxAllowedDistance = (float)(state.Speed * MaxSpeedMultiplier * timeDelta);
 
-        _entities[entityId] = state;
+        if (distance > maxAllowedDistance && timeDelta > 0.1) // Give 100ms grace period
+        {
+            Console.WriteLine($"[MovementService] {entityId} moved too fast! Distance: {distance}, Max allowed: {maxAllowedDistance:F2} (time: {timeDelta:F3}s)");
+            OnPositionCorrected?.Invoke(entityId, oldPosition, "speed_hack");
+            return;
+        }
+
+        // Validation 3: Check teleporting (can't skip tiles)
+        if (distance > 1 && timeDelta < 0.5) // Moving >1 tile in <0.5s is suspicious
+        {
+            Console.WriteLine($"[MovementService] {entityId} possible teleport detected: {oldPosition} -> {newPosition} in {timeDelta:F3}s");
+            OnPositionCorrected?.Invoke(entityId, oldPosition, "teleport_detected");
+            return;
+        }
+
+        // Update accepted
+        state.CurrentPosition = newPosition;
+        state.LastUpdateTime = now;
+
+        // Track position history for pattern detection
+        state.RecentPositions.Enqueue(newPosition);
+        if (state.RecentPositions.Count > RecentPositionHistorySize)
+        {
+            state.RecentPositions.Dequeue();
+        }
+
+        // Calculate actual duration based on distance and speed
+        float duration = distance / state.Speed;
+
+        // Broadcast movement to other clients
+        OnEntityMove?.Invoke(entityId, oldPosition, newPosition, duration);
+
+        Console.WriteLine($"[MovementService] {entityId} moved: {oldPosition} -> {newPosition} (validated, distance: {distance})");
     }
 
     /// <summary>
-    /// Handle client acknowledgment that movement completed (players only).
-    /// ✅ FIXED: Send next command immediately (no pause!)
+    /// Queue a path for an entity (for mouse clicks - server calculates path).
+    /// This sends individual move commands one at a time.
     /// </summary>
-    public void OnClientMovementComplete(string entityId, TilePosition completedCell)
+    public void RequestPath(string entityId, TilePosition target)
     {
-        if (!_entities.TryGetValue(entityId, out var state)) return;
-
-        bool isNPC = entityId.StartsWith("npc_");
-        if (isNPC) return; // NPCs don't send acknowledgments
-
-        // Reset waiting state
-        state.WaitingForAcknowledgment = false;
-
-        // Verify position
-        if (state.NextTargetCell.HasValue &&
-            state.NextTargetCell.Value.X == completedCell.X &&
-            state.NextTargetCell.Value.Y == completedCell.Y)
+        if (!_entities.TryGetValue(entityId, out var state))
         {
-            // Position matches - update normally
-            state.CurrentCell = completedCell;
-            state.NextTargetCell = null;
-            state.TimeSinceLastCommand = 0f;
-        }
-        else
-        {
-            // Position mismatch - force resync
-            Console.WriteLine($"[MovementService] Position mismatch for {entityId}. " +
-                $"Expected: {state.NextTargetCell}, Got: {completedCell}. Resyncing.");
-            state.CurrentCell = completedCell;
-            state.NextTargetCell = null;
-            state.TimeSinceLastCommand = 0f;
+            Console.WriteLine($"[MovementService] Unknown entity: {entityId}");
+            return;
         }
 
-        // ✅ SEND NEXT COMMAND IMMEDIATELY (no pause!)
-        if (state.QueuedPath.Count > 0)
-        {
-            var toCell = state.QueuedPath.Dequeue();
-            float duration = state.CommandInterval;
-            double timestamp = _serverUptime;
+        // For now, just accept the target and let client handle pathfinding
+        // In production, you'd validate the entire path here
+        Console.WriteLine($"[MovementService] {entityId} requested path to {target}");
 
-            // Send next command immediately
-            OnSendMoveCommand?.Invoke(entityId, state.CurrentCell, toCell, duration, timestamp);
-
-            state.NextTargetCell = toCell;
-            state.WaitingForAcknowledgment = true;
-            state.TimeSinceLastCommand = 0f;
-            state.Status = MovementStatus.Moving; // Stay moving!
-            state.LastCommandSentTime = timestamp;
-
-            Console.WriteLine($"[MovementService] Player {entityId} completed move to {completedCell}, immediately sending next command");
-        }
-        else
-        {
-            // Path complete - now go idle
-            state.Status = MovementStatus.Idle;
-            Console.WriteLine($"[MovementService] Player {entityId} completed move to {completedCell}, path finished");
-        }
-
-        _entities[entityId] = state;
+        // Client will move itself, we just validate each step
     }
 
-    public EntityMovementState? GetEntityState(string playerId)
-        => _entities.TryGetValue(playerId, out var s) ? s : null;
-
-    public void RemoveEntity(string playerId)
+    public TilePosition GetEntityPosition(string entityId)
     {
-        _entities.TryRemove(playerId, out _);
-        Console.WriteLine($"[MovementService] Removed {playerId}");
+        if (_entities.TryGetValue(entityId, out var state))
+        {
+            return state.CurrentPosition;
+        }
+        return null;
     }
 
-    public List<string> GetCellOccupants(TilePosition cell)
-        => _entities.Where(kv =>
-               (kv.Value.CurrentCell.X == cell.X && kv.Value.CurrentCell.Y == cell.Y) ||
-               (kv.Value.NextTargetCell.HasValue &&
-                kv.Value.NextTargetCell.Value.X == cell.X &&
-                kv.Value.NextTargetCell.Value.Y == cell.Y))
-           .Select(kv => kv.Key).ToList();
-
-    /// <summary>
-    /// Get snapshot of all entities.
-    /// IMPORTANT: NPCs ARE included for initial spawning on clients!
-    /// Clients will ignore NPC position updates, but need them to spawn the GameObjects.
-    /// </summary>
     public List<EntityStateDto> GetAllEntitiesSnapshot()
     {
         var list = new List<EntityStateDto>();
 
         foreach (var kvp in _entities)
         {
-            var state = kvp.Value;
+            var pos = kvp.Value.CurrentPosition;
             list.Add(new EntityStateDto
             {
                 playerId = kvp.Key,
-                x = state.CurrentCell.X,
-                y = state.CurrentCell.Y,
-                status = state.Status.ToString()
+                x = pos.X,
+                y = pos.Y,
+                status = "Idle" // In client-auth, we don't track server-side status
             });
         }
 
         return list;
     }
 
-    /// <summary>
-    /// Get current server uptime in seconds (for timestamp synchronization).
-    /// Clients can use this to calculate time offset.
-    /// </summary>
-    public double GetServerUptime() => _serverUptime;
+    public void RemoveEntity(string entityId)
+    {
+        if (_entities.Remove(entityId))
+        {
+            Console.WriteLine($"[MovementService] Removed entity {entityId}");
+
+            // Optional: Broadcast entity removal to other clients
+            OnEntityRemoved?.Invoke(entityId);
+        }
+    }
 }

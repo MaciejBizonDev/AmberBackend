@@ -3,29 +3,38 @@ using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading.Tasks;
+using AmberBackend.Movement;
 using Newtonsoft.Json;
 
 public class BaseMessage { public string type; }
 
-public class TileClickMessage : BaseMessage
+public class PositionUpdateMessage : BaseMessage
 {
     public string playerId;
     public int x;
     public int y;
 }
 
-// NEW: Move complete message from client
-public class MoveCompleteMessage : BaseMessage
+public class PathRequestMessage : BaseMessage
 {
     public string playerId;
-    public int x;
-    public int y;
+    public int targetX;
+    public int targetY;
 }
 
 public class StateSnapshotMessage
 {
     public string type { get; set; } = "state_snapshot";
     public List<EntityStateDto> entities { get; set; }
+}
+
+public class PositionCorrectionMessage
+{
+    public string type { get; set; } = "position_correction";
+    public string playerId { get; set; }
+    public int x { get; set; }
+    public int y { get; set; }
+    public string reason { get; set; }
 }
 
 public class MessageHandlerService
@@ -35,16 +44,13 @@ public class MessageHandlerService
 
     private readonly Dictionary<string, Func<WebSocket, string, string, Task>> _handlers;
     private readonly Dictionary<string, Func<WebSocket, string, Task<string>>> _registrationHandlers;
-    private readonly MovementWebSocketHandler _movementWsHandler;
 
     public MessageHandlerService(
           PlayerService playerService,
-          MovementService movementService,
-          MovementWebSocketHandler movementWsHandler)
+          MovementService movementService)
     {
         _playerService = playerService;
         _movementService = movementService;
-        _movementWsHandler = movementWsHandler;
 
         _registrationHandlers = new Dictionary<string, Func<WebSocket, string, Task<string>>>
         {
@@ -53,9 +59,9 @@ public class MessageHandlerService
 
         _handlers = new Dictionary<string, Func<WebSocket, string, string, Task>>
         {
-            { "tile_click", HandleTileClickWrapper },
-            { "state_request", HandleStateRequest },
-            { "move_complete", HandleMoveComplete }  // NEW!
+            { "position_update", HandlePositionUpdate },
+            { "path_request", HandlePathRequest },
+            { "state_request", HandleStateRequest }
         };
     }
 
@@ -89,36 +95,32 @@ public class MessageHandlerService
         await ws.SendAsync(buffer, WebSocketMessageType.Text, true, System.Threading.CancellationToken.None);
     }
 
-    private async Task HandleTileClickWrapper(WebSocket ws, string message, string playerId)
+    private async Task HandlePositionUpdate(WebSocket ws, string message, string playerId)
     {
         if (string.IsNullOrEmpty(playerId)) return;
 
-        var click = JsonConvert.DeserializeObject<TileClickMessage>(message);
-        if (click == null) return;
+        var update = JsonConvert.DeserializeObject<PositionUpdateMessage>(message);
+        if (update == null) return;
 
-        var target = new TilePosition { X = click.x, Y = click.y };
+        var newPosition = new TilePosition { X = update.x, Y = update.y };
 
-        await _movementWsHandler.HandleTileClick(ws, playerId, target);
+        // Validate and update position
+        _movementService.OnPositionUpdate(playerId, newPosition);
+
+        await Task.CompletedTask;
     }
 
-    // NEW: Handle movement completion acknowledgment
-    private async Task HandleMoveComplete(WebSocket ws, string message, string playerId)
+    private async Task HandlePathRequest(WebSocket ws, string message, string playerId)
     {
-        if (string.IsNullOrEmpty(playerId))
-        {
-            Console.WriteLine("[MessageHandler] move_complete without playerId");
-            return;
-        }
+        if (string.IsNullOrEmpty(playerId)) return;
 
-        var msg = JsonConvert.DeserializeObject<MoveCompleteMessage>(message);
-        if (msg == null) return;
+        var request = JsonConvert.DeserializeObject<PathRequestMessage>(message);
+        if (request == null) return;
 
-        var completedCell = new TilePosition { X = msg.x, Y = msg.y };
+        var target = new TilePosition { X = request.targetX, Y = request.targetY };
 
-        Console.WriteLine($"[MessageHandler] {playerId} completed move to ({msg.x}, {msg.y})");
-
-        // Notify movement service
-        _movementService.OnClientMovementComplete(playerId, completedCell);
+        // For now, just acknowledge - client handles pathfinding
+        _movementService.RequestPath(playerId, target);
 
         await Task.CompletedTask;
     }
@@ -131,7 +133,7 @@ public class MessageHandlerService
         var response = new { type = "player_registered", playerId = id, x = 5, y = -5 };
         var json = JsonConvert.SerializeObject(response);
         var buf = Encoding.UTF8.GetBytes(json);
-        await ws.SendAsync(buf, WebSocketMessageType.Text, true, CancellationToken.None);
+        await ws.SendAsync(buf, WebSocketMessageType.Text, true, System.Threading.CancellationToken.None);
         return id;
     }
 }

@@ -1,4 +1,6 @@
-﻿public class Player
+﻿using AmberBackend.Movement;
+
+public class Player
 {
     public string Id { get; set; }
     public TilePosition Position { get; set; }

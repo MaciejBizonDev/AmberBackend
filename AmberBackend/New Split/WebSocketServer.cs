@@ -1,6 +1,9 @@
-﻿using Newtonsoft.Json;
+﻿using AmberBackend.Movement;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -9,269 +12,191 @@ using System.Threading.Tasks;
 
 public class WebSocketServer
 {
-    private readonly HttpListener _listener = new();
-    private readonly MessageHandlerService _handlers;
+    private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+    private readonly MessageHandlerService _messageHandler;
     private readonly MovementService _movementService;
 
-    // Track player WebSocket connections
-    private readonly ConcurrentDictionary<string, WebSocket> _playerSockets = new();
-
-    public WebSocketServer(MessageHandlerService handlers, MovementService movementService)
+    public WebSocketServer(MessageHandlerService messageHandler, MovementService movementService)
     {
-        _handlers = handlers;
+        _messageHandler = messageHandler;
         _movementService = movementService;
-        _listener.Prefixes.Add("http://localhost:5000/ws/");
+
+        // Subscribe to movement events
+        _movementService.OnEntityMove += BroadcastEntityMovement;
+        _movementService.OnPositionCorrected += SendPositionCorrection;
     }
 
-    public async Task StartAsync(CancellationToken ct)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        Console.WriteLine("[WebSocketServer] Starting listener...");
-        try
-        {
-            _listener.Start();
-            Console.WriteLine($"[WebSocketServer] Listening on: {string.Join(", ", _listener.Prefixes)}");
-        }
-        catch (HttpListenerException ex)
-        {
-            Console.WriteLine($"[WebSocketServer] Failed to start listener: {ex.Message} (ErrorCode: {ex.ErrorCode})");
-            Console.WriteLine("If you see ErrorCode 5 (Access denied), run (as Administrator):");
-            Console.WriteLine("  netsh http add urlacl url=http://localhost:5000/ws/ user=%USERNAME%");
-            throw;
-        }
+        var listener = new HttpListener();
+        listener.Prefixes.Add("http://localhost:5000/");
+        listener.Start();
 
-        while (!ct.IsCancellationRequested)
-        {
-            HttpListenerContext ctx;
-            try
-            {
-                ctx = await _listener.GetContextAsync().ConfigureAwait(false);
-            }
-            catch (HttpListenerException ex) when (ct.IsCancellationRequested)
-            {
-                Console.WriteLine("[WebSocketServer] Listener stopped (cancellation requested).");
-                break;
-            }
-            catch (ObjectDisposedException)
-            {
-                Console.WriteLine("[WebSocketServer] Listener disposed; exiting accept loop.");
-                break;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("[WebSocketServer] Error accepting connection: " + ex);
-                continue;
-            }
-
-            Console.WriteLine($"[WebSocketServer] Incoming connection from {ctx.Request.RemoteEndPoint}");
-
-            HttpListenerWebSocketContext wsContext;
-            try
-            {
-                wsContext = await ctx.AcceptWebSocketAsync(subProtocol: null).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("[WebSocketServer] Failed to accept WebSocket: " + ex);
-                ctx.Response.StatusCode = 500;
-                ctx.Response.Close();
-                continue;
-            }
-
-            _ = Task.Run(async () => await HandleClientAsync(wsContext.WebSocket), ct);
-        }
-
-        Console.WriteLine("[WebSocketServer] Accept loop exited.");
-    }
-
-    private async Task HandleClientAsync(WebSocket ws)
-    {
-        var buffer = new byte[4096];
-        string currentPlayerId = null;
+        Console.WriteLine("[WebSocketServer] Listening on http://localhost:5000/");
 
         try
         {
-            while (ws.State == WebSocketState.Open)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                try
+                var context = await listener.GetContextAsync();
+
+                if (context.Request.IsWebSocketRequest)
                 {
-                    var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    var wsContext = await context.AcceptWebSocketAsync(null);
+                    var ws = wsContext.WebSocket;
 
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by client", CancellationToken.None);
-                        break;
-                    }
+                    Console.WriteLine("[WebSocketServer] Client connected");
 
-                    if (result.MessageType != WebSocketMessageType.Text)
-                        continue;
-
-                    string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    var baseMsg = JsonConvert.DeserializeObject<BaseMessage>(msg);
-                    if (baseMsg == null || string.IsNullOrEmpty(baseMsg.type))
-                        continue;
-
-                    currentPlayerId = await _handlers.HandleMessageAsync(ws, baseMsg.type, msg, currentPlayerId);
-
-                    // Track this player's WebSocket
-                    if (!string.IsNullOrEmpty(currentPlayerId) && !_playerSockets.ContainsKey(currentPlayerId))
-                    {
-                        _playerSockets[currentPlayerId] = ws;
-                        Console.WriteLine($"[WebSocketServer] Registered socket for {currentPlayerId}");
-
-                        // Send initial time sync message
-                        await SendTimeSyncMessage(ws);
-                    }
+                    // Handle client in background
+                    _ = Task.Run(() => HandleClientAsync(ws), cancellationToken);
                 }
-                catch (WebSocketException)
+                else
                 {
-                    break;
+                    context.Response.StatusCode = 400;
+                    context.Response.Close();
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in WebSocket handler: {ex.Message}");
+            Console.WriteLine($"[WebSocketServer] Error: {ex.Message}");
         }
         finally
         {
-            // Cleanup
-            if (currentPlayerId != null)
+            listener.Stop();
+            Console.WriteLine("[WebSocketServer] Stopped");
+        }
+    }
+
+    public async Task HandleClientAsync(WebSocket ws)
+    {
+        string playerId = null;
+
+        try
+        {
+            var buffer = new byte[4096];
+
+            while (ws.State == WebSocketState.Open)
             {
-                _playerSockets.TryRemove(currentPlayerId, out _);
-                Console.WriteLine($"[WebSocketServer] Removed socket for {currentPlayerId}");
+                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    Console.WriteLine($"[WebSocketServer] Client {playerId ?? "unknown"} requested close");
+                    break;
+                }
+
+                if (result.MessageType != WebSocketMessageType.Text) continue;
+
+                string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                var baseMsg = JsonConvert.DeserializeObject<BaseMessage>(message);
+
+                if (baseMsg != null && !string.IsNullOrEmpty(baseMsg.type))
+                {
+                    playerId = await _messageHandler.HandleMessageAsync(ws, baseMsg.type, message, playerId);
+
+                    // Register client socket after player registration
+                    if (baseMsg.type == "register_player" && !string.IsNullOrEmpty(playerId))
+                    {
+                        _clients[playerId] = ws;
+                        Console.WriteLine($"[WebSocketServer] Registered client socket for {playerId}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WebSocketServer] Error handling client {playerId}: {ex.Message}");
+        }
+        finally
+        {
+            // ✅ Clean up when client disconnects
+            if (!string.IsNullOrEmpty(playerId))
+            {
+                _clients.TryRemove(playerId, out _);
+
+                // ✅ NEW: Remove from MovementService
+                _movementService.RemoveEntity(playerId);
+
+                Console.WriteLine($"[WebSocketServer] Removed and cleaned up client {playerId}");
             }
 
-            if (ws.State != WebSocketState.Closed)
+            if (ws.State == WebSocketState.Open)
             {
-                try
-                {
-                    await ws.CloseAsync(WebSocketCloseStatus.InternalServerError, "Connection closed", CancellationToken.None);
-                }
-                catch { /* Ignore */ }
+                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
             }
         }
     }
 
     /// <summary>
-    /// Send time synchronization message to help client calculate offset.
-    /// Client can use this to align timestamps.
+    /// Broadcast entity movement to all other clients (not the entity that moved).
     /// </summary>
-    private async Task SendTimeSyncMessage(WebSocket ws)
+    private async void BroadcastEntityMovement(string entityId, TilePosition from, TilePosition to, float duration)
     {
         var msg = new
         {
-            type = "time_sync",
-            serverUptime = _movementService.GetServerUptime()
-        };
-
-        try
-        {
-            var json = JsonConvert.SerializeObject(msg);
-            var buffer = Encoding.UTF8.GetBytes(json);
-            await ws.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
-            Console.WriteLine($"[WebSocketServer] Sent time_sync: {msg.serverUptime:F3}s");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[WebSocketServer] Error sending time_sync: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Send timestamped move command to player(s).
-    /// - NPCs: Broadcast to ALL clients
-    /// - Players: Send only to that specific player
-    /// </summary>
-    public async Task SendMoveCommandToPlayer(string playerId, TilePosition fromCell, TilePosition toCell, float duration, double timestamp)
-    {
-        // NPCs: broadcast to everyone
-        if (playerId.StartsWith("npc_"))
-        {
-            await BroadcastMoveCommand(playerId, fromCell, toCell, duration, timestamp);
-            return;
-        }
-
-        // Players: send only to that player
-        if (!_playerSockets.TryGetValue(playerId, out var ws))
-        {
-            Console.WriteLine($"[WebSocketServer] No socket for {playerId}");
-            return;
-        }
-
-        if (ws.State != WebSocketState.Open)
-        {
-            Console.WriteLine($"[WebSocketServer] Socket closed for {playerId}");
-            return;
-        }
-
-        var command = new
-        {
             type = "move_command",
-            playerId,
-            fromX = fromCell.X,
-            fromY = fromCell.Y,
-            toX = toCell.X,
-            toY = toCell.Y,
-            duration,
-            timestamp // ✅ NEW: Server timestamp
+            playerId = entityId,
+            fromX = from.X,
+            fromY = from.Y,
+            toX = to.X,
+            toY = to.Y,
+            duration = duration
         };
 
-        try
-        {
-            var json = JsonConvert.SerializeObject(command);
-            var buffer = Encoding.UTF8.GetBytes(json);
-            await ws.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
-
-            Console.WriteLine($"[Server→Client] move_command to {playerId}: ({fromCell.X},{fromCell.Y}) → ({toCell.X},{toCell.Y}) | duration:{duration:F3}s | timestamp:{timestamp:F3}s");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[WebSocketServer] Error sending to {playerId}: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Broadcast a timestamped move command to ALL connected clients (used for NPCs).
-    /// </summary>
-    private async Task BroadcastMoveCommand(string playerId, TilePosition fromCell, TilePosition toCell, float duration, double timestamp)
-    {
-        var command = new
-        {
-            type = "move_command",
-            playerId,
-            fromX = fromCell.X,
-            fromY = fromCell.Y,
-            toX = toCell.X,
-            toY = toCell.Y,
-            duration,
-            timestamp // ✅ NEW: Server timestamp
-        };
-
-        var json = JsonConvert.SerializeObject(command);
+        var json = JsonConvert.SerializeObject(msg);
         var buffer = Encoding.UTF8.GetBytes(json);
 
-        int successCount = 0;
-        int failCount = 0;
+        // Broadcast to all clients EXCEPT the entity that moved
+        var tasks = _clients
+            .Where(kvp => kvp.Key != entityId)
+            .Select(kvp => SafeSendAsync(kvp.Value, buffer));
 
-        // Broadcast to ALL connected clients
-        foreach (var kvp in _playerSockets)
+        await Task.WhenAll(tasks);
+
+        Console.WriteLine($"[WebSocketServer] Broadcast movement: {entityId} moved {from} -> {to}");
+    }
+
+    /// <summary>
+    /// Send position correction to a specific client.
+    /// </summary>
+    private async void SendPositionCorrection(string playerId, TilePosition correctedPosition, string reason)
+    {
+        if (!_clients.TryGetValue(playerId, out var ws))
         {
-            var socket = kvp.Value;
-            if (socket.State == WebSocketState.Open)
-            {
-                try
-                {
-                    await socket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
-                    successCount++;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[WebSocketServer] Error broadcasting to {kvp.Key}: {ex.Message}");
-                    failCount++;
-                }
-            }
+            Console.WriteLine($"[WebSocketServer] Can't send correction to {playerId}, client not found");
+            return;
         }
 
-        Console.WriteLine($"[Server→ALL] move_command for {playerId}: ({fromCell.X},{fromCell.Y}) → ({toCell.X},{toCell.Y}) | duration:{duration:F3}s | timestamp:{timestamp:F3}s | sent to {successCount} clients");
+        var msg = new PositionCorrectionMessage
+        {
+            type = "position_correction",
+            playerId = playerId,
+            x = correctedPosition.X,
+            y = correctedPosition.Y,
+            reason = reason
+        };
+
+        var json = JsonConvert.SerializeObject(msg);
+        var buffer = Encoding.UTF8.GetBytes(json);
+
+        await SafeSendAsync(ws, buffer);
+
+        Console.WriteLine($"[WebSocketServer] Sent position correction to {playerId}: {correctedPosition} (reason: {reason})");
+    }
+
+    private async Task SafeSendAsync(WebSocket ws, byte[] buffer)
+    {
+        try
+        {
+            if (ws.State == WebSocketState.Open)
+            {
+                await ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WebSocketServer] Error sending message: {ex.Message}");
+        }
     }
 }
