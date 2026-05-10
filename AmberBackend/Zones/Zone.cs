@@ -1,0 +1,383 @@
+﻿using AmberBackend.AI;
+using AmberBackend.Combat;
+using AmberBackend.Movement;
+using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.WebSockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace AmberBackend.Zones
+{
+    /// <summary>
+    /// A single game zone with its own services and entities.
+    /// Isolated from other zones.
+    /// </summary>
+    public class Zone
+    {
+        public string ZoneId { get; }
+        public string Name { get; }
+
+        // Zone-specific services
+        public MovementService MovementService { get; }
+        public CombatService CombatService { get; }
+        public NPCService NPCService { get; }
+        public AIService AIService { get; private set; }
+
+        private readonly NPCStateManager _npcStateManager = new NPCStateManager();
+
+        // Entities in this zone
+        private readonly HashSet<string> _playerIds = new HashSet<string>();
+        private readonly Dictionary<string, EnemySpawnPoint> _enemySpawns = new Dictionary<string, EnemySpawnPoint>();
+        private readonly List<ZonePortal> _portals = new List<ZonePortal>();
+        private readonly HashSet<string> _aiEnabledNpcs = new HashSet<string>();
+
+        private CancellationTokenSource _cts;
+        private Task _npcUpdateTask;
+        private Task _respawnTask;
+
+        private WebSocketServer _webSocketServer;
+        private readonly TilemapRepository _tilemaps;
+        private readonly GridAStarPathfinder _pathfinder;
+
+        public Zone(ZoneDefinition definition, TilemapRepository tilemaps, GridAStarPathfinder pathfinder)
+        {
+            ZoneId = definition.ZoneId;
+            Name = definition.Name;
+
+            _tilemaps = tilemaps;
+            _pathfinder = pathfinder;
+
+            MovementService = new MovementService(tilemaps);
+            NPCService = new NPCService(tilemaps, pathfinder);
+            CombatService = new CombatService(tilemaps, MovementService);
+
+            CombatService.OnAbilityResult += HandleAbilityResult;
+
+            NPCService.OnNpcMove += (npcId, from, to, duration) =>
+            {
+                MovementService.BroadcastNpcMovement(npcId, from, to, duration);
+            };
+
+            Console.WriteLine($"[Zone:{ZoneId}] Zone created: {Name}");
+
+            // Register enemy spawns (but don't spawn yet)
+            foreach (var spawn in definition.EnemySpawns)
+            {
+                _enemySpawns[spawn.SpawnId] = spawn;
+            }
+
+        }
+
+        /// <summary>
+        /// Set the WebSocket broadcaster for this zone (called after construction).
+        /// </summary>
+        public void SetBroadcaster(WebSocketServer webSocketServer)
+        {
+            _webSocketServer = webSocketServer;
+            MovementService.SetBroadcaster(webSocketServer, ZoneId);
+            CombatService.SetBroadcaster(webSocketServer, ZoneId);
+
+            // Create AIService now that we have WebSocketServer
+            AIService = new AIService(
+                MovementService,
+                CombatService,
+                _pathfinder,
+                ZoneId,
+                _npcStateManager,
+                webSocketServer
+            );
+            SpawnAllEnemies();
+        }
+
+        /// <summary>
+        /// Add a portal to this zone.
+        /// </summary>
+        public void AddPortal(ZonePortal portal)
+        {
+            _portals.Add(portal);
+            Console.WriteLine($"[Zone:{ZoneId}] Added portal {portal.PortalId} at ({portal.TriggerPosition.X}, {portal.TriggerPosition.Y}) -> {portal.DestinationZoneId}");
+        }
+
+        /// <summary>
+        /// Check if a position has a portal.
+        /// </summary>
+        public ZonePortal CheckForPortal(TilePosition position)
+        {
+            foreach (var portal in _portals)
+            {
+                if (portal.TriggerPosition.X == position.X && portal.TriggerPosition.Y == position.Y)
+                {
+                    return portal;
+                }
+            }
+            return null;
+        }
+
+        private void SpawnAllEnemies()
+        {
+            foreach (var spawn in _enemySpawns.Values)
+            {
+                SpawnEnemy(spawn);
+            }
+        }
+
+        private void SpawnEnemy(EnemySpawnPoint spawn)
+        {
+            NPCService.SpawnNpc(spawn.EnemyId, spawn.SpawnPosition, spawn.PatrolPath, spawn.Speed);
+            MovementService.RegisterEntity(spawn.EnemyId, spawn.SpawnPosition, spawn.Speed);
+            CombatService.RegisterEntity(spawn.EnemyId);
+
+            if (spawn.AIBehavior != AIBehaviorType.Passive)
+            {
+                AIService.RegisterEnemy(spawn.EnemyId, spawn.SpawnPosition, spawn.AIBehavior, spawn.PatrolPath);
+                NPCService.DisableNpc(spawn.EnemyId);
+            }
+
+            spawn.IsAlive = true;
+
+            Console.WriteLine($"[Zone:{ZoneId}] Spawned enemy: {spawn.EnemyId} at ({spawn.SpawnPosition.X}, {spawn.SpawnPosition.Y})");
+        }
+
+        private void UpdateAIPlayerDetection()
+        {
+            foreach (var playerId in _playerIds)
+            {
+                var playerPos = MovementService.GetEntityPosition(playerId);
+                if (playerPos != null)
+                {
+                    AIService.NotifyPlayerNearby(playerId, playerPos);
+                }
+            }
+        }
+
+        private void HandleAbilityResult(AbilityResultMessage result)
+        {
+            if (!result.wasKilled)
+                return;
+
+            // Check if killed entity is a spawned enemy
+            var spawn = _enemySpawns.Values.FirstOrDefault(s => s.EnemyId == result.targetId);
+            if (spawn == null)
+                return;
+
+            AIService.UnregisterEnemy(spawn.EnemyId);
+
+            // Mark as dead and record death time
+            spawn.IsAlive = false;
+            spawn.DeathTime = DateTime.UtcNow;
+
+            AIService.UnregisterEnemy(spawn.EnemyId);
+
+            Console.WriteLine($"[Zone:{ZoneId}] Enemy {spawn.EnemyId} killed. Respawning in {spawn.RespawnTime}s");
+
+            // Broadcast death to clients (so they can destroy GameObject)
+            if (_webSocketServer != null)
+            {
+                _webSocketServer.BroadcastToZone(ZoneId, new
+                {
+                    type = "entity_died",
+                    playerId = spawn.EnemyId
+                });
+            }
+        }
+
+        /// <summary>
+        /// Start zone update loop (NPC AI, respawns).
+        /// </summary>
+        public void Start()
+        {
+            if (_npcUpdateTask != null)
+            {
+                Console.WriteLine($"[Zone:{ZoneId}] Already started");
+                return;
+            }
+
+            _cts = new CancellationTokenSource();
+
+            // NPC update loop (10 Hz)
+            _npcUpdateTask = Task.Run(async () =>
+            {
+                while (!_cts.Token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        // Only tick non-AI NPCs for patrol
+                        // AI-controlled NPCs are moved by their behavior trees
+                        TickNonAINPCs();
+
+                        UpdateAIPlayerDetection();
+                        AIService.Tick(0.1f);
+                        await Task.Delay(100, _cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }, _cts.Token);
+
+            // Respawn loop (1 Hz)
+            _respawnTask = Task.Run(async () =>
+            {
+                while (!_cts.Token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        CheckRespawns();
+                        await Task.Delay(1000, _cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }, _cts.Token);
+
+            Console.WriteLine($"[Zone:{ZoneId}] Started update loops");
+        }
+
+        private void TickNonAINPCs()
+        {
+            // TODO: NPCService needs a way to tick only specific NPCs
+            // For now, this will tick all - AI movement will override
+            NPCService.Tick(0.1f);
+        }
+
+        /// <summary>
+        /// Call this when walkability changes (door opens/closes, wall destroyed, etc.)
+        /// </summary>
+        /// <summary>
+        /// Call this when walkability changes (door opens/closes, wall destroyed, etc.)
+        /// </summary>
+        public void BroadcastWalkabilityChange(int x, int y, bool walkable)
+        {
+            if (_webSocketServer == null)
+            {
+                Console.WriteLine($"[Zone:{ZoneId}] Cannot broadcast walkability - no WebSocketServer");
+                return;
+            }
+
+            var message = new
+            {
+                type = "walkability_delta",
+                changes = new[]
+                {
+            new { x = x, y = y, walkable = walkable }
+        }
+            };
+
+            _webSocketServer.BroadcastToZone(ZoneId, message);
+
+            Console.WriteLine($"[Zone:{ZoneId}] Broadcast walkability change: ({x},{y}) = {walkable}");
+        }
+
+        private void CheckRespawns()
+        {
+            var now = DateTime.UtcNow;
+
+            foreach (var spawn in _enemySpawns.Values)
+            {
+                if (spawn.IsAlive)
+                    continue;
+
+                var timeSinceDeath = (now - spawn.DeathTime).TotalSeconds;
+                if (timeSinceDeath >= spawn.RespawnTime)
+                {
+                    Console.WriteLine($"[Zone:{ZoneId}] Respawning {spawn.EnemyId}");
+                    SpawnEnemy(spawn);
+
+                    // Broadcast spawn to clients
+                    if (_webSocketServer != null)
+                    {
+                        _webSocketServer.BroadcastToZone(ZoneId, new
+                        {
+                            type = "entity_spawned",
+                            playerId = spawn.EnemyId,
+                            x = spawn.SpawnPosition.X,
+                            y = spawn.SpawnPosition.Y
+                        });
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Stop zone update loop.
+        /// </summary>
+        public void Stop()
+        {
+            _cts?.Cancel();
+            _npcUpdateTask?.Wait(1000);
+            _respawnTask?.Wait(1000);
+            Console.WriteLine($"[Zone:{ZoneId}] Stopped");
+        }
+
+        /// <summary>
+        /// Add player to this zone.
+        /// </summary>
+        public void AddPlayer(string playerId, TilePosition spawnPosition)
+        {
+            if (_playerIds.Contains(playerId))
+            {
+                Console.WriteLine($"[Zone:{ZoneId}] Player {playerId} already in zone");
+                return;
+            }
+
+            _playerIds.Add(playerId);
+            MovementService.RegisterEntity(playerId, spawnPosition, speed: 4f);
+            CombatService.RegisterEntity(playerId);
+
+            Console.WriteLine($"[Zone:{ZoneId}] Player {playerId} entered. Total players: {_playerIds.Count}");
+        }
+
+        /// <summary>
+        /// Remove player from this zone.
+        /// </summary>
+        public void RemovePlayer(string playerId)
+        {
+            if (!_playerIds.Contains(playerId))
+            {
+                Console.WriteLine($"[Zone:{ZoneId}] Player {playerId} not in zone");
+                return;
+            }
+
+            _playerIds.Remove(playerId);
+            MovementService.RemoveEntity(playerId);
+            _npcStateManager.ClearPlayerStates(playerId); // NEW - Clean up per-player NPC states
+
+            Console.WriteLine($"[Zone:{ZoneId}] Player {playerId} left. Total players: {_playerIds.Count}");
+        }
+
+        /// <summary>
+        /// Get snapshot of all entities in zone (for new players joining).
+        /// Only includes alive enemies.
+        /// </summary>
+        public List<EntityStateDto> GetSnapshot()
+        {
+            // Only return alive enemies
+            var snapshot = MovementService.GetAllEntitiesSnapshot();
+
+            // Filter out dead enemies
+            var aliveEnemyIds = _enemySpawns.Values
+                .Where(s => s.IsAlive)
+                .Select(s => s.EnemyId)
+                .ToHashSet();
+
+            return snapshot.Where(e =>
+                _playerIds.Contains(e.playerId) || // Include all players
+                aliveEnemyIds.Contains(e.playerId)  // Only alive enemies
+            ).ToList();
+        }
+
+        public bool HasPlayer(string playerId)
+        {
+            return _playerIds.Contains(playerId);
+        }
+
+        public int PlayerCount => _playerIds.Count;
+    }
+}

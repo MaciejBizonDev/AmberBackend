@@ -1,76 +1,92 @@
-﻿using AmberBackend.Movement;
+﻿using AmberBackend.Combat;
+using AmberBackend.Inventory;
+using AmberBackend.Movement;
+using AmberBackend.Zones;
 using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 
 public class Program
 {
     public static async Task Main(string[] args)
     {
-        if (!TestDatabaseConnection())
-        {
-            Console.WriteLine("Database connection failed. Exiting.");
-            return;
-        }
-
-
-
-        ///
         var cts = new CancellationTokenSource();
 
-        // Initialize services
+        // Database config
+        // Read from environment variables with fallback to defaults for local dev
+        string dbHost = Environment.GetEnvironmentVariable("DB_HOST") ?? "localhost";
+        int dbPort = int.Parse(Environment.GetEnvironmentVariable("DB_PORT") ?? "5432");
+        string dbName = Environment.GetEnvironmentVariable("DB_NAME") ?? "mmorpg";
+        string dbUser = Environment.GetEnvironmentVariable("DB_USER") ?? "gameserver";
+        string dbPassword = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "game123";
+        string connectionString = $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPassword}";
+
         var tilemaps = new TilemapRepository("Resources/Tilemaps");
         var pathfinder = new GridAStarPathfinder(tilemaps);
-        var playerService = new PlayerService();
-        var movementService = new MovementService(tilemaps);
-        var npcService = new NPCService(tilemaps, pathfinder);
-        var messageHandler = new MessageHandlerService(playerService, movementService);
-        var wsServer = new WebSocketServer(messageHandler, movementService);
 
-        // ✅ Wire NPC movements to broadcast to all clients
-        npcService.OnNpcMove += (npcId, from, to, duration) =>
-        {
-            movementService.BroadcastNpcMovement(npcId, from, to, duration);
-        };
+        var database = new PlayerDatabase(dbHost, dbPort, dbName, dbUser, dbPassword);
+        var playerService = new PlayerService(database);
+        var registrationService = new RegistrationService(connectionString);
+        // NEW: Item and inventory services
+        var itemDatabase = new ItemDatabase(dbHost, dbPort, dbName, dbUser, dbPassword);
+        var inventoryService = new InventoryService(connectionString, itemDatabase);
 
-        // Spawn some NPCs with patrol paths
-        var guard1Path = new List<TilePosition>
-        {
-            new TilePosition(0, 0),
-            new TilePosition(5, 0)
-        };
-        npcService.SpawnNpc("npc_guard_1", new TilePosition(0, 0), guard1Path, speed: 2f);
+        var sessionManager = new PlayerSessionManager();
+        var zoneManager = new ZoneManager(tilemaps, pathfinder);
+        var zoneTransitionService = new ZoneTransitionService(zoneManager, sessionManager, playerService);
 
-        var guard2Path = new List<TilePosition>
-        {
-            new TilePosition(0, 3),
-            new TilePosition(5, 3)
-        };
-        npcService.SpawnNpc("npc_guard_2", new TilePosition(0, 3), guard2Path, speed: 2f);
+        // Pass inventoryService to message handler
+        var messageHandler = new MessageHandlerService(
+            playerService,
+            sessionManager,
+            zoneManager,
+            zoneTransitionService,
+            inventoryService,
+            registrationService
+        );
 
-        // Register NPCs in movement service (so they appear in snapshots)
-        movementService.RegisterEntity("npc_guard_1", new TilePosition(0, 0), speed: 2f);
-        movementService.RegisterEntity("npc_guard_2", new TilePosition(0, 3), speed: 2f);
+        var wsServer = new WebSocketServer(
+            messageHandler,
+            playerService,
+            zoneManager,
+            sessionManager
+        );
 
-        Console.WriteLine("=== Client-Authoritative Movement System ===");
-        Console.WriteLine("Players: Client moves immediately, server validates");
-        Console.WriteLine("NPCs: Server-authoritative movement");
-        Console.WriteLine("Much simpler than acknowledgment system!");
-        Console.WriteLine("===========================================");
+        zoneManager.SetWebSocketServer(wsServer);
 
-        // ✅ Start WebSocket server (this is the key line!)
+        // Create both zones
+        var testZone = zoneManager.CreateZone(ZoneDefinition.TestZone);
+        var townZone = zoneManager.CreateZone(ZoneDefinition.TownZone);
+
+        // Add portals
+        testZone.AddPortal(ZonePortal.TestZoneToTown);
+        townZone.AddPortal(ZonePortal.TownToTestZone);
+
+        database.CleanupOldPlayers(daysInactive: 30);
+        Console.WriteLine($"[Database] Total players: {database.GetPlayerCount()}");
+        Console.WriteLine($"[Database] Active (7 days): {database.GetActivePlayerCount(7)}");
+
+        Console.WriteLine("=== Zone-Based MMORPG Server ===");
+        Console.WriteLine($"Active zones: test_zone, town_1");
+        Console.WriteLine($"Portals: test_zone(10,-5) <-> town_1(15,14)");
+        Console.WriteLine("====================================");
+
         var wsTask = wsServer.StartAsync(cts.Token);
 
-        // ✅ NPC update loop (10 Hz = every 100ms)
-        var npcTickTask = Task.Run(async () =>
+        var autoSaveTask = Task.Run(async () =>
         {
             while (!cts.Token.IsCancellationRequested)
             {
                 try
                 {
-                    npcService.Tick(0.1f);
-                    await Task.Delay(100, cts.Token);
+                    await Task.Delay(30000, cts.Token);
+                    var savedCount = wsServer.SaveAllPlayerPositions();
+                    if (savedCount > 0)
+                    {
+                        Console.WriteLine($"[AutoSave] Saved {savedCount} player positions");
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -79,36 +95,22 @@ public class Program
             }
         }, cts.Token);
 
-        Console.WriteLine("Server started on ws://localhost:5000/ws");
+        //Console.WriteLine("Server started on ws:http://0.0.0.0:5000/");
+        Console.WriteLine("Auto-save: Every 30 seconds");
         Console.WriteLine("Press Ctrl+C to stop.");
 
         Console.CancelKeyPress += (s, e) =>
         {
             e.Cancel = true;
+            Console.WriteLine("\n[Server] Shutting down...");
+            var savedCount = wsServer.SaveAllPlayerPositions();
+            Console.WriteLine($"[Server] Final save: {savedCount} players");
+            zoneManager.StopAll();
             cts.Cancel();
         };
 
-        await Task.WhenAll(wsTask, npcTickTask);
-
+        await Task.WhenAll(wsTask, autoSaveTask);
         Console.WriteLine("Server stopped.");
     }
 
-    private static bool TestDatabaseConnection()
-    {
-        var connectionString = "Host=localhost;Port=5432;Database=mmorpg;Username=gameserver;Password=game123";
-
-        try
-        {
-            using var conn = new Npgsql.NpgsqlConnection(connectionString);
-            conn.Open();
-            Console.WriteLine("✅ Connected to PostgreSQL successfully!");
-            Console.WriteLine($"PostgreSQL version: {conn.ServerVersion}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ Database connection failed: {ex.Message}");
-            return false;
-        }
-    }
 }
