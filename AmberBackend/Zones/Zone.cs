@@ -42,6 +42,7 @@ namespace AmberBackend.Zones
         private WebSocketServer _webSocketServer;
         private readonly TilemapRepository _tilemaps;
         private readonly GridAStarPathfinder _pathfinder;
+        private readonly Dictionary<string, NpcSpawnPoint> _npcSpawns = new Dictionary<string, NpcSpawnPoint>();
 
         public Zone(ZoneDefinition definition, TilemapRepository tilemaps, GridAStarPathfinder pathfinder)
         {
@@ -69,7 +70,10 @@ namespace AmberBackend.Zones
             {
                 _enemySpawns[spawn.SpawnId] = spawn;
             }
-
+            foreach (var npc in definition.NpcSpawns)
+            {
+                _npcSpawns[npc.SpawnId] = npc;
+            }
         }
 
         /// <summary>
@@ -91,6 +95,7 @@ namespace AmberBackend.Zones
                 webSocketServer
             );
             SpawnAllEnemies();
+            SpawnAllNpcs();
         }
 
         /// <summary>
@@ -140,6 +145,29 @@ namespace AmberBackend.Zones
             spawn.IsAlive = true;
 
             Console.WriteLine($"[Zone:{ZoneId}] Spawned enemy: {spawn.EnemyId} at ({spawn.SpawnPosition.X}, {spawn.SpawnPosition.Y})");
+        }
+
+        private void SpawnAllNpcs()
+        {
+            foreach (var npc in _npcSpawns.Values)
+            {
+                SpawnNpc(npc);
+            }
+        }
+
+        private void SpawnNpc(NpcSpawnPoint npc)
+        {
+            NPCService.SpawnNpc(npc.NpcId, npc.SpawnPosition, npc.PatrolPath, npc.Speed);
+            MovementService.RegisterEntity(npc.NpcId, npc.SpawnPosition, npc.Speed);
+            CombatService.RegisterEntity(npc.NpcId);
+
+            var stats = CombatService.GetStats(npc.NpcId);
+            if (stats != null)
+            {
+                stats.IsAttackable = false;
+            }
+
+            Console.WriteLine($"[Zone:{ZoneId}] Spawned NPC: {npc.NpcId} ({npc.Role}) at ({npc.SpawnPosition.X}, {npc.SpawnPosition.Y})");
         }
 
         private void UpdateAIPlayerDetection()
@@ -326,10 +354,23 @@ namespace AmberBackend.Zones
                 Console.WriteLine($"[Zone:{ZoneId}] Player {playerId} already in zone");
                 return;
             }
-
             _playerIds.Add(playerId);
             MovementService.RegisterEntity(playerId, spawnPosition, speed: 4f);
             CombatService.RegisterEntity(playerId);
+
+            // NEW: Broadcast to other players in zone
+            if (_webSocketServer != null)
+            {
+                _webSocketServer.BroadcastToZoneExcept(ZoneId, playerId, new
+                {
+                    type = "entity_spawned",
+                    playerId = playerId,
+                    x = spawnPosition.X,
+                    y = spawnPosition.Y,
+                    entityType = "player"
+                });
+                Console.WriteLine($"[Zone:{ZoneId}] Broadcasted player spawn: {playerId}");
+            }
 
             Console.WriteLine($"[Zone:{ZoneId}] Player {playerId} entered. Total players: {_playerIds.Count}");
         }
@@ -358,19 +399,40 @@ namespace AmberBackend.Zones
         /// </summary>
         public List<EntityStateDto> GetSnapshot()
         {
-            // Only return alive enemies
             var snapshot = MovementService.GetAllEntitiesSnapshot();
 
-            // Filter out dead enemies
+            var enemyIds = _enemySpawns.Values
+                .Select(s => s.EnemyId)
+                .ToHashSet();
+
             var aliveEnemyIds = _enemySpawns.Values
                 .Where(s => s.IsAlive)
                 .Select(s => s.EnemyId)
                 .ToHashSet();
 
-            return snapshot.Where(e =>
-                _playerIds.Contains(e.playerId) || // Include all players
-                aliveEnemyIds.Contains(e.playerId)  // Only alive enemies
+            var npcIds = _npcSpawns.Values
+                .Select(s => s.NpcId)
+                .ToHashSet();
+
+            var filtered = snapshot.Where(e =>
+                _playerIds.Contains(e.playerId) ||
+                aliveEnemyIds.Contains(e.playerId) ||
+                npcIds.Contains(e.playerId)
             ).ToList();
+
+            foreach (var entity in filtered)
+            {
+                if (_playerIds.Contains(entity.playerId))
+                    entity.entityType = "player";
+                else if (enemyIds.Contains(entity.playerId))
+                    entity.entityType = "enemy";
+                else if (npcIds.Contains(entity.playerId))
+                    entity.entityType = "npc";
+                else
+                    entity.entityType = "unknown";
+            }
+
+            return filtered;
         }
 
         public bool HasPlayer(string playerId)
@@ -381,3 +443,4 @@ namespace AmberBackend.Zones
         public int PlayerCount => _playerIds.Count;
     }
 }
+

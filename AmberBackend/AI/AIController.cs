@@ -75,8 +75,10 @@ namespace AmberBackend.AI
                 }
 
                 // Check if target escaped (out of chase range)
-                int distance = Math.Abs(Context.TargetPosition.X - Context.CurrentPosition.X) +
-                              Math.Abs(Context.TargetPosition.Y - Context.CurrentPosition.Y);
+                int distance = Math.Max(
+                    Math.Abs(Context.TargetPosition.X - Context.CurrentPosition.X),
+                    Math.Abs(Context.TargetPosition.Y - Context.CurrentPosition.Y)
+                );
 
                 int chaseRange = Context.AggroRange * 2;
                 if (distance > chaseRange)

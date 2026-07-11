@@ -21,8 +21,10 @@ namespace AmberBackend.AI.Conditions
                 return NodeStatus.Failure;
             }
 
-            int distance = Math.Abs(context.TargetPosition.X - context.CurrentPosition.X) +
-                          Math.Abs(context.TargetPosition.Y - context.CurrentPosition.Y);
+            int distance = Math.Max(
+                Math.Abs(context.TargetPosition.X - context.CurrentPosition.X),
+                Math.Abs(context.TargetPosition.Y - context.CurrentPosition.Y)
+            );
 
             return distance <= _range ? NodeStatus.Success : NodeStatus.Failure;
         }

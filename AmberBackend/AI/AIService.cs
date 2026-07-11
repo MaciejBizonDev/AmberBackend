@@ -105,19 +105,37 @@ namespace AmberBackend.AI
         {
             foreach (var controller in _aiControllers.Values)
             {
-                // Skip if AI already has a target
-                if (!string.IsNullOrEmpty(controller.Context.TargetPlayerId))
-                    continue;
-
-                // Check if player is in aggro range
-                int distance = Math.Abs(playerPosition.X - controller.Context.CurrentPosition.X) +
-                              Math.Abs(playerPosition.Y - controller.Context.CurrentPosition.Y);
-
-                if (distance <= controller.Context.AggroRange)
+                // If AI has THIS player as target, update their position
+                if (controller.Context.TargetPlayerId == playerId)
                 {
-                    SetTarget(controller.EntityId, playerId, playerPosition);
+                    controller.Context.TargetPosition = playerPosition;
+
+                    // Check leash: drop target if too far
+                    int distance = ChebyshevDistance(playerPosition, controller.Context.CurrentPosition);
+                    if (distance > controller.Context.AggroRange * 2)  // Leash = 2x aggro range
+                    {
+                        Console.WriteLine($"[AIService:{_zoneId}] {controller.EntityId} lost target {playerId} (too far: {distance})");
+                        controller.Context.TargetPlayerId = null;
+                        controller.Context.TargetPosition = null;
+                    }
+                    continue;
+                }
+
+                // No target yet - check aggro range
+                if (string.IsNullOrEmpty(controller.Context.TargetPlayerId))
+                {
+                    int distance = ChebyshevDistance(playerPosition, controller.Context.CurrentPosition);
+                    if (distance <= controller.Context.AggroRange)
+                    {
+                        SetTarget(controller.EntityId, playerId, playerPosition);
+                    }
                 }
             }
+        }
+
+        private static int ChebyshevDistance(TilePosition a, TilePosition b)
+        {
+            return Math.Max(Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
         }
 
         private void ConfigureAbilities(AIContext context, AIBehaviorType behaviorType)

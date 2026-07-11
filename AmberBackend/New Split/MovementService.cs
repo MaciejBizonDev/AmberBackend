@@ -1,7 +1,10 @@
 ﻿using AmberBackend.Movement;
+using AmberBackend.Zones;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.WebSockets;
 
 public class MovementService
 {
@@ -13,7 +16,7 @@ public class MovementService
     public event Action<string, TilePosition, TilePosition, float> OnEntityMove;
     public event Action<string, TilePosition, string> OnPositionCorrected;
     public event Action<string> OnEntityRemoved;
-
+    private readonly Dictionary<string, Direction> _entityFacing = new();
     public MovementService(TilemapRepository tilemaps)
     {
         _tilemaps = tilemaps;
@@ -34,6 +37,7 @@ public class MovementService
             Speed = speed,
             Status = "idle"
         };
+        _entityFacing[entityId] = Direction.Down;
         Console.WriteLine($"[MovementService] Registered {entityId} at ({position.X}, {position.Y})");
     }
 
@@ -41,6 +45,7 @@ public class MovementService
     {
         if (_entities.Remove(entityId))
         {
+            _entityFacing.Remove(entityId);
             Console.WriteLine($"[MovementService] Removed entity {entityId}");
             OnEntityRemoved?.Invoke(entityId);
         }
@@ -75,7 +80,25 @@ public class MovementService
             return;
         }
 
+        var fromPosition = state.Position;
         state.Position = newPosition;
+
+        // NEW: Broadcast to other players in zone
+        if (_webSocketServer != null && !string.IsNullOrEmpty(_zoneId))
+        {
+            float duration = 1f / state.Speed; // Match client move duration
+
+            _webSocketServer.BroadcastToZoneExcept(_zoneId, entityId, new
+            {
+                type = "move_command",
+                playerId = entityId,
+                fromX = fromPosition.X,
+                fromY = fromPosition.Y,
+                toX = newPosition.X,
+                toY = newPosition.Y,
+                duration = duration
+            });
+        }
     }
 
     public void BroadcastNpcMovement(string npcId, TilePosition from, TilePosition to, float duration)
@@ -125,11 +148,45 @@ public class MovementService
         return _tilemaps.IsWalkable(position);
     }
 
+    public Direction GetEntityFacing(string entityId)
+    {
+        return _entityFacing.GetValueOrDefault(entityId, Direction.Down);
+    }
+
+    public void BroadcastEntityTurn(string entityId, Direction direction)
+    {
+        if (_webSocketServer != null && !string.IsNullOrEmpty(_zoneId))
+        {
+            _webSocketServer.BroadcastToZoneExcept(_zoneId, entityId, new
+            {
+                type = "entity_turned",
+                playerId = entityId,
+                direction = direction.ToString().ToLower()
+            });
+
+            Console.WriteLine($"[MovementService] Broadcasted {entityId} turn to {direction}");
+        }
+    }
+
+    public void SetEntityFacing(string entityId, Direction facing)
+    {
+        _entityFacing[entityId] = facing;
+        Console.WriteLine($"[MovementService] {entityId} now facing {facing}");
+    }
+
     private class EntityState
     {
         public string EntityId { get; set; }
         public TilePosition Position { get; set; }
         public float Speed { get; set; }
         public string Status { get; set; }
+    }
+
+    public enum Direction
+    {
+        Up,
+        Down,
+        Left,
+        Right
     }
 }

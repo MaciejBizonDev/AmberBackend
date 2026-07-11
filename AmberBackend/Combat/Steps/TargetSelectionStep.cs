@@ -26,9 +26,17 @@
                 return false;
             }
 
+            if (!targetStats.IsAttackable)
+            {
+                System.Console.WriteLine($"[TargetSelectionStep] Target {context.TargetId} is not attackable");
+                return false;
+            }
+
             // Validate range
-            int distance = System.Math.Abs(context.TargetPosition.X - context.SourcePosition.X) +
-                          System.Math.Abs(context.TargetPosition.Y - context.SourcePosition.Y);
+            int distance = System.Math.Max(
+                System.Math.Abs(context.TargetPosition.X - context.SourcePosition.X),
+                System.Math.Abs(context.TargetPosition.Y - context.SourcePosition.Y)
+            );
 
             if (distance > Range)
             {

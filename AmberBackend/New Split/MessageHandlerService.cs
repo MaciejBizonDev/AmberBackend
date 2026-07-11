@@ -1,15 +1,16 @@
 ﻿using AmberBackend.Combat;
+using AmberBackend.Inventory;
 using AmberBackend.Movement;
 using AmberBackend.Zones;
-using AmberBackend.Inventory;  // NEW
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
-using System.Linq;  // NEW
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using static MovementService;
 
 public class BaseMessage { public string type; }
 
@@ -26,6 +27,11 @@ public class PositionUpdateMessage : BaseMessage
     public int y;
 }
 
+public class TurnRequestMessage : BaseMessage
+{
+    public Direction direction;
+}
+
 public class PathRequestMessage : BaseMessage
 {
     public string playerId;
@@ -39,7 +45,7 @@ public class StateSnapshotMessage
     public List<EntityStateDto> entities { get; set; }
 }
 
-public class UseAbilityMessage  // ADD THIS
+public class UseAbilityMessage
 {
     public string type;
     public string abilityId;
@@ -89,7 +95,8 @@ public class MessageHandlerService
             { "use_item", HandleUseItem },
             { "merchant_open", HandleMerchantOpen },
             { "merchant_purchase", HandleMerchantPurchase },
-            { "walkability_update_request", HandleWalkabilityUpdateRequest }
+            { "walkability_update_request", HandleWalkabilityUpdateRequest },
+            { "turn_request", HandleTurnRequest }
         };
     }
 
@@ -477,6 +484,26 @@ public class MessageHandlerService
         Console.WriteLine($"[MessageHandler] Registration attempt: {request.username} - {(success ? "SUCCESS" : "FAILED")}");
 
         return null; // Registration doesn't log in automatically
+    }
+
+    private async Task HandleTurnRequest(WebSocket ws, string message, string playerId)
+    {
+        if (string.IsNullOrEmpty(playerId)) return;
+
+        var session = _sessionManager.GetSession(playerId);
+        if (session == null) return;
+
+        var zone = _zoneManager.GetZone(session.CurrentZoneId);
+        if (zone == null) return;
+
+        var request = JsonConvert.DeserializeObject<TurnRequestMessage>(message);
+
+        // Update facing direction - MovementService will handle broadcasting
+        zone.MovementService.SetEntityFacing(playerId, request.direction);
+        zone.MovementService.BroadcastEntityTurn(playerId, request.direction);
+
+        Console.WriteLine($"[MessageHandler] {playerId} turned to face {request.direction}");
+        await Task.CompletedTask;
     }
 }
 

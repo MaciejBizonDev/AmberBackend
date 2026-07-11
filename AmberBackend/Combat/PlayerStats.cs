@@ -9,6 +9,8 @@
         public int MaxMana { get; set; }
         public int Level { get; set; }
         public int AttackPower { get; set; }
+        public bool IsAttackable { get; set; } = true;
+
 
         public PlayerStats()
         {

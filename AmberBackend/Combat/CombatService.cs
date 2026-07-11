@@ -52,6 +52,26 @@ namespace AmberBackend.Combat
             Console.WriteLine($"[CombatService] Source: {sourceId}");
             Console.WriteLine($"[CombatService] Ability: {abilityId}");
             Console.WriteLine($"[CombatService] Target: {targetId}");
+
+            // AUTHORITATIVE: use current positions from MovementService, not what caller claims
+            var actualSourcePos = _movementService.GetEntityPosition(sourceId);
+            var actualTargetPos = _movementService.GetEntityPosition(targetId);
+
+            if (actualSourcePos == null)
+            {
+                Console.WriteLine($"[CombatService] ERROR: Source {sourceId} has no known position");
+                return;
+            }
+
+            if (actualTargetPos == null)
+            {
+                Console.WriteLine($"[CombatService] ERROR: Target {targetId} has no known position");
+                return;
+            }
+
+            sourcePos = actualSourcePos;
+            targetPos = actualTargetPos;
+
             Console.WriteLine($"[CombatService] Source pos: ({sourcePos.X}, {sourcePos.Y})");
             Console.WriteLine($"[CombatService] Target pos: ({targetPos.X}, {targetPos.Y})");
 

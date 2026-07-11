@@ -11,6 +11,7 @@ namespace AmberBackend.Zones
         public string TilemapPath { get; set; }
         public List<TilePosition> SpawnPoints { get; set; } = new List<TilePosition>();
         public List<EnemySpawnPoint> EnemySpawns { get; set; } = new List<EnemySpawnPoint>();
+        public List<NpcSpawnPoint> NpcSpawns { get; set; } = new List<NpcSpawnPoint>();
 
         public static ZoneDefinition TestZone => new ZoneDefinition
         {
@@ -25,35 +26,7 @@ namespace AmberBackend.Zones
             },
             EnemySpawns = new List<EnemySpawnPoint>
             {
-                // Aggressive guard with patrol
-                new EnemySpawnPoint
-                {
-                    SpawnId = "spawn_guard_1",
-                    EnemyId = "npc_guard_1",
-                    SpawnPosition = new TilePosition(0, 0),
-                    RespawnTime = 5f,
-                    AIBehavior = AIBehaviorType.MeleeAggressive,
-                    PatrolPath = new List<TilePosition>
-                    {
-                        new TilePosition(0, 0),
-                        new TilePosition(5, 0)
-                    },
-                    Speed = 2f
-                },
-        
-                // Quest giver (non-combat)
-                new EnemySpawnPoint
-                {
-                    SpawnId = "spawn_quest_giver",
-                    EnemyId = "npc_quest_giver_1",
-                    SpawnPosition = new TilePosition(10, -3),
-                    RespawnTime = 999f, // Don't respawn
-                    AIBehavior = AIBehaviorType.QuestGiver,
-                    PatrolPath = new List<TilePosition>(),
-                    Speed = 0f
-                },
-        
-                // Wandering critter
+                // Wandering critter (hostile)
                 new EnemySpawnPoint
                 {
                     SpawnId = "spawn_critter_1",
@@ -64,7 +37,6 @@ namespace AmberBackend.Zones
                     PatrolPath = new List<TilePosition>(),
                     Speed = 1f
                 },
-        
                 // Training dummy (aggressive, stationary)
                 new EnemySpawnPoint
                 {
@@ -76,8 +48,34 @@ namespace AmberBackend.Zones
                     PatrolPath = new List<TilePosition>(),
                     Speed = 0f
                 }
-            }
-        };
+            },
+            NpcSpawns = new List<NpcSpawnPoint>
+            {
+                // Guard (friendly, patrols)
+                new NpcSpawnPoint
+                {
+                    SpawnId = "spawn_guard_1",
+                    NpcId = "npc_guard_1",
+                    SpawnPosition = new TilePosition(0, 0),
+                    Role = NpcRole.Guard,
+                    PatrolPath = new List<TilePosition>
+                    {
+                        new TilePosition(0, 0),
+                        new TilePosition(5, 0)
+                    },
+                    Speed = 2f
+                },
+                // Quest giver (stationary)
+                new NpcSpawnPoint
+                {
+                    SpawnId = "spawn_quest_giver",
+                    NpcId = "npc_quest_giver_1",
+                    SpawnPosition = new TilePosition(10, -3),
+                    Role = NpcRole.QuestGiver,
+                    Speed = 0f
+                }
+        }
+    };
 
         public static ZoneDefinition TownZone => new ZoneDefinition
         {
@@ -92,21 +90,24 @@ namespace AmberBackend.Zones
             },
             EnemySpawns = new List<EnemySpawnPoint>
             {
-                new EnemySpawnPoint
+                // No enemies in town
+            },
+            NpcSpawns = new List<NpcSpawnPoint>
+            {
+                new NpcSpawnPoint
                 {
                     SpawnId = "spawn_merchant_1",
-                    EnemyId = "npc_merchant_1",
+                    NpcId = "npc_merchant_1",
                     SpawnPosition = new TilePosition(20, 20),
-                    RespawnTime = 10f,
-                    PatrolPath = new List<TilePosition>(),
+                    Role = NpcRole.Merchant,
                     Speed = 0f
                 },
-                new EnemySpawnPoint
+                new NpcSpawnPoint
                 {
                     SpawnId = "spawn_guard_town_1",
-                    EnemyId = "npc_guard_town_1",
+                    NpcId = "npc_guard_town_1",
                     SpawnPosition = new TilePosition(18, 18),
-                    RespawnTime = 5f,
+                    Role = NpcRole.Guard,
                     PatrolPath = new List<TilePosition>
                     {
                         new TilePosition(18, 18),
