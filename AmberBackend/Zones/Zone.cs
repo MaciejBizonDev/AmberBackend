@@ -43,6 +43,7 @@ namespace AmberBackend.Zones
         private readonly TilemapRepository _tilemaps;
         private readonly GridAStarPathfinder _pathfinder;
         private readonly Dictionary<string, NpcSpawnPoint> _npcSpawns = new Dictionary<string, NpcSpawnPoint>();
+        private int _statsBroadcastCounter = 0;
 
         public Zone(ZoneDefinition definition, TilemapRepository tilemaps, GridAStarPathfinder pathfinder)
         {
@@ -218,49 +219,35 @@ namespace AmberBackend.Zones
         /// </summary>
         public void Start()
         {
-            if (_npcUpdateTask != null)
-            {
-                Console.WriteLine($"[Zone:{ZoneId}] Already started");
-                return;
-            }
-
             _cts = new CancellationTokenSource();
-
-            // NPC update loop (10 Hz)
             _npcUpdateTask = Task.Run(async () =>
             {
                 while (!_cts.Token.IsCancellationRequested)
                 {
                     try
                     {
-                        // Only tick non-AI NPCs for patrol
-                        // AI-controlled NPCs are moved by their behavior trees
                         TickNonAINPCs();
-
                         UpdateAIPlayerDetection();
                         AIService.Tick(0.1f);
+                        CombatService.TickRegen(0.1f);
+
+                        // Broadcast player stats every 1 second (10 ticks × 100ms)
+                        _statsBroadcastCounter++;
+                        if (_statsBroadcastCounter >= 10)
+                        {
+                            _statsBroadcastCounter = 0;
+                            BroadcastPlayerStats();
+                        }
+
                         await Task.Delay(100, _cts.Token);
                     }
                     catch (OperationCanceledException)
                     {
                         break;
                     }
-                }
-            }, _cts.Token);
-
-            // Respawn loop (1 Hz)
-            _respawnTask = Task.Run(async () =>
-            {
-                while (!_cts.Token.IsCancellationRequested)
-                {
-                    try
+                    catch (Exception ex)
                     {
-                        CheckRespawns();
-                        await Task.Delay(1000, _cts.Token);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
+                        Console.WriteLine($"[Zone:{ZoneId}] Update loop error: {ex.Message}");
                     }
                 }
             }, _cts.Token);
@@ -441,6 +428,31 @@ namespace AmberBackend.Zones
         }
 
         public int PlayerCount => _playerIds.Count;
+
+        private void BroadcastPlayerStats()
+        {
+            if (_webSocketServer == null) return;
+
+            foreach (var playerId in _playerIds)
+            {
+                var stats = CombatService.GetStats(playerId);
+                if (stats == null) continue;
+
+                // Only broadcast if not full HP or full mana (to save bandwidth)
+                if (stats.Hp >= stats.MaxHp && stats.Mana >= stats.MaxMana) continue;
+
+                _webSocketServer.BroadcastToZone(ZoneId, new
+                {
+                    type = "stats_update",
+                    playerId = playerId,
+                    hp = stats.Hp,
+                    maxHp = stats.MaxHp,
+                    mana = stats.Mana,
+                    maxMana = stats.MaxMana,
+                    level = stats.Level
+                });
+            }
+        }
     }
 }
 

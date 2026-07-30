@@ -261,5 +261,27 @@ namespace AmberBackend.Combat
                 _ => null
             };
         }
+
+        public void TickRegen(float deltaSeconds)
+        {
+            foreach (var stats in _entityStats.Values)
+            {
+                if (stats.IsDead) continue;
+
+                // HP regen: 1% of max HP per second
+                int hpRegen = Math.Max(1, (int)(stats.MaxHp * 0.01f * deltaSeconds));
+                if (stats.Hp < stats.MaxHp)
+                {
+                    stats.Hp = Math.Min(stats.MaxHp, stats.Hp + hpRegen);
+                }
+
+                // Mana regen: 5% of max mana per second
+                int manaRegen = Math.Max(1, (int)(stats.MaxMana * 0.05f * deltaSeconds));
+                if (stats.Mana < stats.MaxMana)
+                {
+                    stats.Mana = Math.Min(stats.MaxMana, stats.Mana + manaRegen);
+                }
+            }
+        }
     }
 }

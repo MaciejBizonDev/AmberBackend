@@ -30,7 +30,7 @@ namespace AmberBackend.Combat
             AbilityId = "fireball",
             Name = "Fireball",
             Cooldown = 3.0f,
-            ManaCost = 25,
+            ManaCost = 3,
             Steps = new List<IAbilityStep>
             {
                 new TargetSelectionStep { TargetType = TargetType.SingleEnemy, Range = 5 },
