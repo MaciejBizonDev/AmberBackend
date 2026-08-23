@@ -1,24 +1,25 @@
-﻿using AmberBackend.AI;
-using AmberBackend.Movement;
+﻿using AmberBackend.Movement;
+using System.Collections.Generic;
 
 namespace AmberBackend.Zones
 {
     /// <summary>
-    /// Defines where and when an enemy respawns.
+    /// Defines WHERE an enemy appears. Stats come from the referenced template.
     /// </summary>
     public class EnemySpawnPoint
     {
         public string SpawnId { get; set; }
-        public string EnemyId { get; set; }  // Current instance ID (e.g., "npc_guard_1")
+        public string ZoneId { get; set; }
+        public string TemplateId { get; set; }
         public TilePosition SpawnPosition { get; set; }
-        public float RespawnTime { get; set; }  // Seconds until respawn
-        public bool IsAlive { get; set; } = true;
-        public DateTime DeathTime { get; set; }
-
-        // Optional: For enemies that patrol
         public List<TilePosition> PatrolPath { get; set; } = new List<TilePosition>();
-        public float Speed { get; set; } = 2f;
-        public AIBehaviorType AIBehavior { get; set; } = AIBehaviorType.Passive;
-    }
 
+        // Runtime state
+        public string EnemyId { get; set; }  // Instance ID, generated at spawn
+        public bool IsAlive { get; set; } = true;
+        public System.DateTime DeathTime { get; set; }
+
+        // The resolved template (set when loaded)
+        public EnemyTemplate Template { get; set; }
+    }
 }

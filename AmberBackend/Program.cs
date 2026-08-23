@@ -1,4 +1,5 @@
 ﻿using AmberBackend.Combat;
+using AmberBackend.Database;
 using AmberBackend.Inventory;
 using AmberBackend.Movement;
 using AmberBackend.Zones;
@@ -34,7 +35,8 @@ public class Program
         var inventoryService = new InventoryService(connectionString, itemDatabase);
 
         var sessionManager = new PlayerSessionManager();
-        var zoneManager = new ZoneManager(tilemaps, pathfinder);
+        var enemyRepository = new EnemyRepository(connectionString);
+        var zoneManager = new ZoneManager(tilemaps, pathfinder, enemyRepository);
         var zoneTransitionService = new ZoneTransitionService(zoneManager, sessionManager, playerService);
 
         // Pass inventoryService to message handler

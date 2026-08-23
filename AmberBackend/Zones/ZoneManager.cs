@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using AmberBackend.Database;
 
 namespace AmberBackend.Zones
 {
@@ -12,15 +13,19 @@ namespace AmberBackend.Zones
         private readonly Dictionary<string, Zone> _zones = new Dictionary<string, Zone>();
         private readonly TilemapRepository _tilemaps;
         private readonly GridAStarPathfinder _pathfinder;
+        private readonly EnemyRepository _enemyRepository;
+        private readonly Dictionary<string, EnemyTemplate> _enemyTemplates;
         private WebSocketServer _webSocketServer;
 
-        public ZoneManager(TilemapRepository tilemaps, GridAStarPathfinder pathfinder)
+        public ZoneManager(TilemapRepository tilemaps, GridAStarPathfinder pathfinder, EnemyRepository enemyRepository)
         {
             _tilemaps = tilemaps;
             _pathfinder = pathfinder;
+            _enemyRepository = enemyRepository;
+            _enemyTemplates = enemyRepository.LoadTemplates(); // Load templates once at startup
         }
 
-        // NEW: Set the WebSocketServer after construction
+        // Set the WebSocketServer after construction
         public void SetWebSocketServer(WebSocketServer webSocketServer)
         {
             _webSocketServer = webSocketServer;
@@ -33,41 +38,34 @@ namespace AmberBackend.Zones
                 Console.WriteLine($"[ZoneManager] Zone {definition.ZoneId} already exists");
                 return _zones[definition.ZoneId];
             }
-
             if (_webSocketServer == null)
             {
                 throw new InvalidOperationException("WebSocketServer must be set before creating zones");
             }
 
             var zone = new Zone(definition, _tilemaps, _pathfinder);
-            zone.SetBroadcaster(_webSocketServer); // Set broadcaster after construction
+            zone.SetBroadcaster(_webSocketServer);
+
+            // Load enemy spawns from DB for this zone
+            var enemySpawns = _enemyRepository.LoadSpawnsForZone(definition.ZoneId, _enemyTemplates);
+            zone.LoadEnemySpawns(enemySpawns);
+
             _zones[definition.ZoneId] = zone;
             zone.Start();
-
             Console.WriteLine($"[ZoneManager] Created zone: {definition.ZoneId}");
             return zone;
         }
 
-
-        /// <summary>
-        /// Get a zone by ID.
-        /// </summary>
         public Zone GetZone(string zoneId)
         {
             return _zones.TryGetValue(zoneId, out var zone) ? zone : null;
         }
 
-        /// <summary>
-        /// Get all active zones.
-        /// </summary>
         public IEnumerable<Zone> GetAllZones()
         {
             return _zones.Values;
         }
 
-        /// <summary>
-        /// Destroy a zone (for dynamic instances).
-        /// </summary>
         public void DestroyZone(string zoneId)
         {
             if (!_zones.TryGetValue(zoneId, out var zone))
@@ -75,10 +73,8 @@ namespace AmberBackend.Zones
                 Console.WriteLine($"[ZoneManager] Zone {zoneId} doesn't exist");
                 return;
             }
-
             zone.Stop();
             _zones.Remove(zoneId);
-
             Console.WriteLine($"[ZoneManager] Destroyed zone: {zoneId}");
         }
 

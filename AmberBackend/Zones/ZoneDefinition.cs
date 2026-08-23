@@ -10,7 +10,6 @@ namespace AmberBackend.Zones
         public string Name { get; set; }
         public string TilemapPath { get; set; }
         public List<TilePosition> SpawnPoints { get; set; } = new List<TilePosition>();
-        public List<EnemySpawnPoint> EnemySpawns { get; set; } = new List<EnemySpawnPoint>();
         public List<NpcSpawnPoint> NpcSpawns { get; set; } = new List<NpcSpawnPoint>();
 
         public static ZoneDefinition TestZone => new ZoneDefinition
@@ -23,31 +22,6 @@ namespace AmberBackend.Zones
                 new TilePosition(5, -5),
                 new TilePosition(6, -5),
                 new TilePosition(7, -5)
-            },
-            EnemySpawns = new List<EnemySpawnPoint>
-            {
-                // Wandering critter (hostile)
-                new EnemySpawnPoint
-                {
-                    SpawnId = "spawn_critter_1",
-                    EnemyId = "npc_critter_1",
-                    SpawnPosition = new TilePosition(15, -5),
-                    RespawnTime = 10f,
-                    AIBehavior = AIBehaviorType.Critter,
-                    PatrolPath = new List<TilePosition>(),
-                    Speed = 1f
-                },
-                // Training dummy (aggressive, stationary)
-                new EnemySpawnPoint
-                {
-                    SpawnId = "spawn_dummy_1",
-                    EnemyId = "npc_dummy_1",
-                    SpawnPosition = new TilePosition(8, -5),
-                    RespawnTime = 3f,
-                    AIBehavior = AIBehaviorType.MeleeAggressive,
-                    PatrolPath = new List<TilePosition>(),
-                    Speed = 0f
-                }
             },
             NpcSpawns = new List<NpcSpawnPoint>
             {
@@ -87,10 +61,6 @@ namespace AmberBackend.Zones
                 new TilePosition(3, -2),
                 new TilePosition(4, -2),
                 new TilePosition(5, -2)
-            },
-            EnemySpawns = new List<EnemySpawnPoint>
-            {
-                // No enemies in town
             },
             NpcSpawns = new List<NpcSpawnPoint>
             {

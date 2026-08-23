@@ -251,6 +251,13 @@ namespace AmberBackend.Combat
             return DateTime.UtcNow < expiresAt;
         }
 
+        public void RemoveEntity(string entityId)
+        {
+            _entityStats.Remove(entityId);
+            _cooldowns.Remove(entityId);
+            Console.WriteLine($"[CombatService] Removed entity {entityId}");
+        }
+
         private AbilityDefinition GetAbilityDefinition(string abilityId)
         {
             return abilityId switch

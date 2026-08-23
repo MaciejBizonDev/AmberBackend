@@ -66,11 +66,6 @@ namespace AmberBackend.Zones
 
             Console.WriteLine($"[Zone:{ZoneId}] Zone created: {Name}");
 
-            // Register enemy spawns (but don't spawn yet)
-            foreach (var spawn in definition.EnemySpawns)
-            {
-                _enemySpawns[spawn.SpawnId] = spawn;
-            }
             foreach (var npc in definition.NpcSpawns)
             {
                 _npcSpawns[npc.SpawnId] = npc;
@@ -123,6 +118,16 @@ namespace AmberBackend.Zones
             return null;
         }
 
+        public void LoadEnemySpawns(List<EnemySpawnPoint> spawns)
+        {
+            _enemySpawns.Clear();
+            foreach (var spawn in spawns)
+            {
+                _enemySpawns[spawn.SpawnId] = spawn;
+            }
+            Console.WriteLine($"[Zone:{ZoneId}] Loaded {spawns.Count} enemy spawns from DB");
+        }
+
         private void SpawnAllEnemies()
         {
             foreach (var spawn in _enemySpawns.Values)
@@ -133,19 +138,31 @@ namespace AmberBackend.Zones
 
         private void SpawnEnemy(EnemySpawnPoint spawn)
         {
-            NPCService.SpawnNpc(spawn.EnemyId, spawn.SpawnPosition, spawn.PatrolPath, spawn.Speed);
-            MovementService.RegisterEntity(spawn.EnemyId, spawn.SpawnPosition, spawn.Speed);
-            CombatService.RegisterEntity(spawn.EnemyId);
+            var template = spawn.Template;
 
-            if (spawn.AIBehavior != AIBehaviorType.Passive)
+            NPCService.SpawnNpc(spawn.EnemyId, spawn.SpawnPosition, spawn.PatrolPath, template.Speed);
+            MovementService.RegisterEntity(spawn.EnemyId, spawn.SpawnPosition, template.Speed);
+
+            CombatService.RegisterEntity(spawn.EnemyId, new PlayerStats
             {
-                AIService.RegisterEnemy(spawn.EnemyId, spawn.SpawnPosition, spawn.AIBehavior, spawn.PatrolPath);
+                PlayerId = spawn.EnemyId,
+                Hp = template.MaxHp,
+                MaxHp = template.MaxHp,
+                Mana = 0,
+                MaxMana = 0,
+                Level = 1,
+                AttackPower = template.AttackPower,
+                IsAttackable = true
+            });
+
+            if (template.AIBehavior != AIBehaviorType.Passive)
+            {
+                AIService.RegisterEnemy(spawn.EnemyId, spawn.SpawnPosition, template.AIBehavior, spawn.PatrolPath);
                 NPCService.DisableNpc(spawn.EnemyId);
             }
 
             spawn.IsAlive = true;
-
-            Console.WriteLine($"[Zone:{ZoneId}] Spawned enemy: {spawn.EnemyId} at ({spawn.SpawnPosition.X}, {spawn.SpawnPosition.Y})");
+            Console.WriteLine($"[Zone:{ZoneId}] Spawned enemy: {spawn.EnemyId} ({template.DisplayName}) at ({spawn.SpawnPosition.X}, {spawn.SpawnPosition.Y}) with {template.MaxHp} HP");
         }
 
         private void SpawnAllNpcs()
@@ -188,22 +205,20 @@ namespace AmberBackend.Zones
             if (!result.wasKilled)
                 return;
 
-            // Check if killed entity is a spawned enemy
             var spawn = _enemySpawns.Values.FirstOrDefault(s => s.EnemyId == result.targetId);
             if (spawn == null)
                 return;
 
             AIService.UnregisterEnemy(spawn.EnemyId);
+            MovementService.RemoveEntity(spawn.EnemyId);
+            CombatService.RemoveEntity(spawn.EnemyId);
 
-            // Mark as dead and record death time
             spawn.IsAlive = false;
             spawn.DeathTime = DateTime.UtcNow;
 
-            AIService.UnregisterEnemy(spawn.EnemyId);
+            var respawnTime = spawn.Template?.RespawnTime ?? 10f;
+            Console.WriteLine($"[Zone:{ZoneId}] Enemy {spawn.EnemyId} killed. Respawning in {respawnTime}s");
 
-            Console.WriteLine($"[Zone:{ZoneId}] Enemy {spawn.EnemyId} killed. Respawning in {spawn.RespawnTime}s");
-
-            // Broadcast death to clients (so they can destroy GameObject)
             if (_webSocketServer != null)
             {
                 _webSocketServer.BroadcastToZone(ZoneId, new
@@ -230,6 +245,7 @@ namespace AmberBackend.Zones
                         UpdateAIPlayerDetection();
                         AIService.Tick(0.1f);
                         CombatService.TickRegen(0.1f);
+                        CheckRespawns();
 
                         // Broadcast player stats every 1 second (10 ticks × 100ms)
                         _statsBroadcastCounter++;
@@ -293,19 +309,19 @@ namespace AmberBackend.Zones
         private void CheckRespawns()
         {
             var now = DateTime.UtcNow;
-
             foreach (var spawn in _enemySpawns.Values)
             {
                 if (spawn.IsAlive)
                     continue;
 
                 var timeSinceDeath = (now - spawn.DeathTime).TotalSeconds;
-                if (timeSinceDeath >= spawn.RespawnTime)
+                var respawnTime = spawn.Template?.RespawnTime ?? 10f;
+
+                if (timeSinceDeath >= respawnTime)
                 {
                     Console.WriteLine($"[Zone:{ZoneId}] Respawning {spawn.EnemyId}");
                     SpawnEnemy(spawn);
 
-                    // Broadcast spawn to clients
                     if (_webSocketServer != null)
                     {
                         _webSocketServer.BroadcastToZone(ZoneId, new
@@ -313,7 +329,8 @@ namespace AmberBackend.Zones
                             type = "entity_spawned",
                             playerId = spawn.EnemyId,
                             x = spawn.SpawnPosition.X,
-                            y = spawn.SpawnPosition.Y
+                            y = spawn.SpawnPosition.Y,
+                            entityType = "enemy"
                         });
                     }
                 }
