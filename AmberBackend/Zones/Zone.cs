@@ -90,7 +90,7 @@ namespace AmberBackend.Zones
                 _npcStateManager,
                 webSocketServer
             );
-            SpawnAllEnemies();
+
             SpawnAllNpcs();
         }
 
@@ -234,6 +234,7 @@ namespace AmberBackend.Zones
         /// </summary>
         public void Start()
         {
+            SpawnAllEnemies();
             _cts = new CancellationTokenSource();
             _npcUpdateTask = Task.Run(async () =>
             {
