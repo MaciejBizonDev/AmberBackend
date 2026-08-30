@@ -41,8 +41,8 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd ~/amber-game
-            docker-compose pull gameserver
-            docker-compose up -d --no-deps gameserver
+            docker compose pull gameserver
+            docker compose up -d --no-deps gameserver
             docker ps
             echo "Deployment complete!"
           EOF
