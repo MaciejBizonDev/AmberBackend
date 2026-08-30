@@ -164,14 +164,14 @@ public class MovementService
                 direction = direction.ToString().ToLower()
             });
 
-            Console.WriteLine($"[MovementService] Broadcasted {entityId} turn to {direction}");
+            //Console.WriteLine($"[MovementService] Broadcasted {entityId} turn to {direction}");
         }
     }
 
     public void SetEntityFacing(string entityId, Direction facing)
     {
         _entityFacing[entityId] = facing;
-        Console.WriteLine($"[MovementService] {entityId} now facing {facing}");
+        //Console.WriteLine($"[MovementService] {entityId} now facing {facing}");
     }
 
     private class EntityState

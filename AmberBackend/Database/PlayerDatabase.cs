@@ -177,21 +177,46 @@ public class PlayerDatabase
 
     public int CleanupOldPlayers(int daysInactive = 30)
     {
-        using var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        try
+        {
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
 
-        var command = connection.CreateCommand();
-        command.CommandText = @"
-            DELETE FROM Players
-            WHERE LastLogin < @cutoffDate";
+            var cutoffDate = DateTime.UtcNow.AddDays(-daysInactive);
 
-        var cutoffDate = DateTime.UtcNow.AddDays(-daysInactive);
-        command.Parameters.AddWithValue("cutoffDate", cutoffDate);
+            using var transaction = connection.BeginTransaction();
 
-        int deleted = command.ExecuteNonQuery();
+            // Delete users that reference the old players FIRST (respect FK constraint)
+            var deleteUsers = connection.CreateCommand();
+            deleteUsers.Transaction = transaction;
+            deleteUsers.CommandText = @"
+            DELETE FROM users
+            WHERE playerid IN (
+                SELECT playerid FROM players WHERE lastlogin < @cutoffDate
+            )";
+            deleteUsers.Parameters.AddWithValue("cutoffDate", cutoffDate);
+            int usersDeleted = deleteUsers.ExecuteNonQuery();
 
-        Console.WriteLine($"[PlayerDatabase] Cleaned up {deleted} inactive players (>{daysInactive} days)");
-        return deleted;
+            // Then delete the players
+            var deletePlayers = connection.CreateCommand();
+            deletePlayers.Transaction = transaction;
+            deletePlayers.CommandText = @"
+            DELETE FROM players
+            WHERE lastlogin < @cutoffDate";
+            deletePlayers.Parameters.AddWithValue("cutoffDate", cutoffDate);
+            int playersDeleted = deletePlayers.ExecuteNonQuery();
+
+            transaction.Commit();
+
+            Console.WriteLine($"[PlayerDatabase] Cleaned up {playersDeleted} inactive players and {usersDeleted} users (>{daysInactive} days)");
+            return playersDeleted;
+        }
+        catch (Exception ex)
+        {
+            // Cleanup failure should NEVER crash server startup
+            Console.WriteLine($"[PlayerDatabase] CleanupOldPlayers failed (non-fatal): {ex.Message}");
+            return 0;
+        }
     }
 
     public int GetPlayerCount()
