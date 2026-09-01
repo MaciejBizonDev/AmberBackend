@@ -36,7 +36,8 @@ public class Program
 
         var sessionManager = new PlayerSessionManager();
         var enemyRepository = new EnemyRepository(connectionString);
-        var zoneManager = new ZoneManager(tilemaps, pathfinder, enemyRepository);
+        var zoneRepository = new ZoneRepository(connectionString);
+        var zoneManager = new ZoneManager(tilemaps, pathfinder, enemyRepository, zoneRepository);
         var zoneTransitionService = new ZoneTransitionService(zoneManager, sessionManager, playerService);
 
         // Pass inventoryService to message handler
@@ -59,12 +60,11 @@ public class Program
         zoneManager.SetWebSocketServer(wsServer);
 
         // Create both zones
-        var testZone = zoneManager.CreateZone(ZoneDefinition.TestZone);
-        var townZone = zoneManager.CreateZone(ZoneDefinition.TownZone);
-
-        // Add portals
-        testZone.AddPortal(ZonePortal.TestZoneToTown);
-        townZone.AddPortal(ZonePortal.TownToTestZone);
+        var zoneDefinitions = zoneRepository.LoadAllZones();
+        foreach (var zoneDef in zoneDefinitions)
+        {
+            zoneManager.CreateZone(zoneDef);  // NPCs + portals loaded inside CreateZone
+        }
 
         database.CleanupOldPlayers(daysInactive: 30);
         Console.WriteLine($"[Database] Total players: {database.GetPlayerCount()}");

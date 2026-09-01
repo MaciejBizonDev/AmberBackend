@@ -16,12 +16,15 @@ namespace AmberBackend.Zones
         private readonly EnemyRepository _enemyRepository;
         private readonly Dictionary<string, EnemyTemplate> _enemyTemplates;
         private WebSocketServer _webSocketServer;
+        private readonly ZoneRepository _zoneRepository;
 
-        public ZoneManager(TilemapRepository tilemaps, GridAStarPathfinder pathfinder, EnemyRepository enemyRepository)
+
+        public ZoneManager(TilemapRepository tilemaps, GridAStarPathfinder pathfinder, EnemyRepository enemyRepository, ZoneRepository zoneRepository)
         {
             _tilemaps = tilemaps;
             _pathfinder = pathfinder;
             _enemyRepository = enemyRepository;
+            _zoneRepository = zoneRepository;
             _enemyTemplates = enemyRepository.LoadTemplates(); // Load templates once at startup
         }
 
@@ -49,6 +52,15 @@ namespace AmberBackend.Zones
             // Load enemy spawns from DB for this zone
             var enemySpawns = _enemyRepository.LoadSpawnsForZone(definition.ZoneId, _enemyTemplates);
             zone.LoadEnemySpawns(enemySpawns);
+
+            var npcs = _zoneRepository.LoadNpcsForZone(definition.ZoneId);
+            zone.LoadNpcSpawns(npcs);
+
+            var portals = _zoneRepository.LoadPortalsForZone(definition.ZoneId);
+            foreach (var portal in portals)
+            {
+                zone.AddPortal(portal);
+            }
 
             _zones[definition.ZoneId] = zone;
             zone.Start();

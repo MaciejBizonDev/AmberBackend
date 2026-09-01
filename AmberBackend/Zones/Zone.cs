@@ -65,11 +65,6 @@ namespace AmberBackend.Zones
             };
 
             Console.WriteLine($"[Zone:{ZoneId}] Zone created: {Name}");
-
-            foreach (var npc in definition.NpcSpawns)
-            {
-                _npcSpawns[npc.SpawnId] = npc;
-            }
         }
 
         /// <summary>
@@ -90,8 +85,6 @@ namespace AmberBackend.Zones
                 _npcStateManager,
                 webSocketServer
             );
-
-            SpawnAllNpcs();
         }
 
         /// <summary>
@@ -126,6 +119,16 @@ namespace AmberBackend.Zones
                 _enemySpawns[spawn.SpawnId] = spawn;
             }
             Console.WriteLine($"[Zone:{ZoneId}] Loaded {spawns.Count} enemy spawns from DB");
+        }
+
+        public void LoadNpcSpawns(List<NpcSpawnPoint> npcs)
+        {
+            _npcSpawns.Clear();
+            foreach (var npc in npcs)
+            {
+                _npcSpawns[npc.SpawnId] = npc;
+            }
+            Console.WriteLine($"[Zone:{ZoneId}] Loaded {npcs.Count} NPC spawns from DB");
         }
 
         private void SpawnAllEnemies()
@@ -235,6 +238,7 @@ namespace AmberBackend.Zones
         public void Start()
         {
             SpawnAllEnemies();
+            SpawnAllNpcs();
             _cts = new CancellationTokenSource();
             _npcUpdateTask = Task.Run(async () =>
             {
