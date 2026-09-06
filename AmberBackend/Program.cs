@@ -37,6 +37,7 @@ public class Program
         var sessionManager = new PlayerSessionManager();
         var enemyRepository = new EnemyRepository(connectionString);
         var zoneRepository = new ZoneRepository(connectionString);
+        var abilityRepository = new AbilityRepository(connectionString);
         var zoneManager = new ZoneManager(tilemaps, pathfinder, enemyRepository, zoneRepository);
         var zoneTransitionService = new ZoneTransitionService(zoneManager, sessionManager, playerService);
 
@@ -47,7 +48,8 @@ public class Program
             zoneManager,
             zoneTransitionService,
             inventoryService,
-            registrationService
+            registrationService,
+            abilityRepository
         );
 
         var wsServer = new WebSocketServer(

@@ -1,4 +1,5 @@
 ﻿using AmberBackend.Combat;
+using AmberBackend.Database;
 using AmberBackend.Inventory;
 using AmberBackend.Movement;
 using AmberBackend.Zones;
@@ -60,6 +61,7 @@ public class MessageHandlerService
     private readonly ZoneTransitionService _zoneTransitionService;
     private readonly InventoryService _inventoryService;
     private readonly RegistrationService _registrationService;
+    private readonly AbilityRepository _abilityRepository;
 
     private readonly Dictionary<string, Func<WebSocket, string, string, Task>> _handlers;
     private readonly Dictionary<string, Func<WebSocket, string, Task<string>>> _registrationHandlers;
@@ -70,7 +72,8 @@ public class MessageHandlerService
         ZoneManager zoneManager,
         ZoneTransitionService zoneTransitionService,
         InventoryService inventoryService,
-        RegistrationService registrationService)
+        RegistrationService registrationService,
+        AbilityRepository abilityRepository)
     {
         _playerService = playerService;
         _sessionManager = sessionManager;
@@ -78,6 +81,7 @@ public class MessageHandlerService
         _zoneTransitionService = zoneTransitionService;
         _inventoryService = inventoryService;
         _registrationService = registrationService;
+        _abilityRepository = abilityRepository;
 
         _registrationHandlers = new Dictionary<string, Func<WebSocket, string, Task<string>>>
         {
@@ -166,7 +170,6 @@ public class MessageHandlerService
 
             Console.WriteLine($"[MessageHandler] Player logged in: {request.username} ({playerId}) -> Zone: {zoneId}");
 
-            // NEW: Send state snapshot with all entities in zone
             var snapshot = zone.GetSnapshot();
             var snapshotMessage = new
             {
@@ -179,6 +182,28 @@ public class MessageHandlerService
             await ws.SendAsync(snapshotBuf, WebSocketMessageType.Text, true, CancellationToken.None);
 
             Console.WriteLine($"[MessageHandler] Sent state snapshot to {playerId}: {snapshot.Count} entities");
+
+            var abilities = _abilityRepository.LoadPlayerAbilities(playerId);
+            var abilitiesMessage = new
+            {
+                type = "player_abilities",
+                abilities = abilities.Select(a => new
+                {
+                    abilityId = a.AbilityId,
+                    name = a.Name,
+                    description = a.Description,
+                    iconPath = a.IconPath,
+                    cooldown = a.Cooldown,
+                    manaCost = a.ManaCost,
+                    range = a.Range,
+                    isAutoAttack = a.IsAutoAttack,
+                    slotIndex = a.SlotIndex
+                })
+            };
+            var abilitiesJson = JsonConvert.SerializeObject(abilitiesMessage);
+            var abilitiesBuf = Encoding.UTF8.GetBytes(abilitiesJson);
+            await ws.SendAsync(abilitiesBuf, WebSocketMessageType.Text, true, CancellationToken.None);
+            Console.WriteLine($"[MessageHandler] Sent {abilities.Count} abilities to {playerId}");
 
             return playerId;
         }
@@ -343,7 +368,6 @@ public class MessageHandlerService
         await Task.CompletedTask;
     }
 
-    // NEW: Inventory handlers
     private async Task HandleInventoryRequest(WebSocket ws, string message, string playerId)
     {
         if (string.IsNullOrEmpty(playerId)) return;
