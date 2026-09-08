@@ -463,6 +463,27 @@ namespace AmberBackend.Inventory
             command.ExecuteNonQuery();
         }
 
+        public int GetInventorySize(string playerId)
+        {
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
+
+            var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT inventory_slots
+                FROM Players
+                WHERE PlayerId = @playerId";
+            command.Parameters.AddWithValue("playerId", playerId);
+
+            var result = command.ExecuteScalar();
+            if (result != null && result != DBNull.Value)
+            {
+                return Convert.ToInt32(result);
+            }
+
+            return 32; // fallback default
+        }
+
         public class MerchantInventoryItem
         {
             public string ItemId { get; set; }

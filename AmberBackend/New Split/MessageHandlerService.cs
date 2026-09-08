@@ -374,11 +374,12 @@ public class MessageHandlerService
 
         var inventory = _inventoryService.LoadInventory(playerId);
         var currency = _inventoryService.GetCurrency(playerId);
+        var inventorySizeofPlayer = _inventoryService.GetInventorySize(playerId);
 
         var response = new
         {
             type = "inventory_data",
-            inventorySize = 50,
+            inventorySize = inventorySizeofPlayer,
             currency = new
             {
                 copper = currency.Copper,
