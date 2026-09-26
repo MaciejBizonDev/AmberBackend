@@ -100,7 +100,9 @@ public class MessageHandlerService
             { "merchant_open", HandleMerchantOpen },
             { "merchant_purchase", HandleMerchantPurchase },
             { "walkability_update_request", HandleWalkabilityUpdateRequest },
-            { "turn_request", HandleTurnRequest }
+            { "turn_request", HandleTurnRequest },
+            { "move_item", HandleMoveItem },       
+            { "swap_items", HandleSwapItems }
         };
     }
 
@@ -530,6 +532,36 @@ public class MessageHandlerService
         Console.WriteLine($"[MessageHandler] {playerId} turned to face {request.direction}");
         await Task.CompletedTask;
     }
+
+    private async Task HandleMoveItem(WebSocket ws, string message, string playerId)
+    {
+        if (string.IsNullOrEmpty(playerId)) return;
+
+        var request = JsonConvert.DeserializeObject<MoveItemRequest>(message);
+        if (request == null) return;
+
+        bool ok = _inventoryService.MoveItem(playerId, request.inventoryId, request.newSlotIndex);
+        Console.WriteLine($"[MessageHandler] move_item {(ok ? "OK" : "FAILED")}: {playerId} {request.inventoryId} -> slot {request.newSlotIndex}");
+
+        await Task.CompletedTask;
+    }
+
+    private async Task HandleSwapItems(WebSocket ws, string message, string playerId)
+    {
+        if (string.IsNullOrEmpty(playerId)) return;
+
+        var request = JsonConvert.DeserializeObject<SwapItemsRequest>(message);
+        if (request == null) return;
+
+        bool ok = _inventoryService.SwapItems(
+            playerId,
+            request.inventoryIdA, request.slotIndexA,
+            request.inventoryIdB, request.slotIndexB);
+
+        Console.WriteLine($"[MessageHandler] swap_items {(ok ? "OK" : "FAILED")}: {playerId}");
+
+        await Task.CompletedTask;
+    }
 }
 
 // NEW: Message types
@@ -554,4 +586,22 @@ public class MerchantPurchaseRequest
     public string merchantId;
     public string itemId;
     public int quantity;
+}
+
+[System.Serializable]
+public class MoveItemRequest
+{
+    public string type;
+    public string inventoryId;
+    public int newSlotIndex;
+}
+
+[System.Serializable]
+public class SwapItemsRequest
+{
+    public string type;
+    public string inventoryIdA;
+    public string inventoryIdB;
+    public int slotIndexA;
+    public int slotIndexB;
 }

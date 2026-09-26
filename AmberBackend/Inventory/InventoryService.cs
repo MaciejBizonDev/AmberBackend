@@ -484,6 +484,59 @@ namespace AmberBackend.Inventory
             return 32; // fallback default
         }
 
+        /// <summary>
+        /// Swap the slot positions of two inventory items.
+        /// </summary>
+        public bool SwapItems(string playerId, string inventoryIdA, int slotIndexA,
+                               string inventoryIdB, int slotIndexB)
+        {
+            using var connection = new NpgsqlConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+
+            try
+            {
+                // Move A to a temporary sentinel slot (-1) to avoid clashes
+                var cmd1 = connection.CreateCommand();
+                cmd1.Transaction = transaction;
+                cmd1.CommandText = @"UPDATE PlayerInventory SET SlotIndex = -1
+                             WHERE InventoryId = @invA AND PlayerId = @playerId";
+                cmd1.Parameters.AddWithValue("invA", inventoryIdA);
+                cmd1.Parameters.AddWithValue("playerId", playerId);
+                cmd1.ExecuteNonQuery();
+
+                // Move B to A's old slot
+                var cmd2 = connection.CreateCommand();
+                cmd2.Transaction = transaction;
+                cmd2.CommandText = @"UPDATE PlayerInventory SET SlotIndex = @slotA
+                             WHERE InventoryId = @invB AND PlayerId = @playerId";
+                cmd2.Parameters.AddWithValue("slotA", slotIndexA);
+                cmd2.Parameters.AddWithValue("invB", inventoryIdB);
+                cmd2.Parameters.AddWithValue("playerId", playerId);
+                cmd2.ExecuteNonQuery();
+
+                // Move A (from sentinel) to B's old slot
+                var cmd3 = connection.CreateCommand();
+                cmd3.Transaction = transaction;
+                cmd3.CommandText = @"UPDATE PlayerInventory SET SlotIndex = @slotB
+                             WHERE InventoryId = @invA AND PlayerId = @playerId";
+                cmd3.Parameters.AddWithValue("slotB", slotIndexB);
+                cmd3.Parameters.AddWithValue("invA", inventoryIdA);
+                cmd3.Parameters.AddWithValue("playerId", playerId);
+                cmd3.ExecuteNonQuery();
+
+                transaction.Commit();
+                Console.WriteLine($"[InventoryService] Swapped {inventoryIdA}<->{inventoryIdB} (slots {slotIndexA}<->{slotIndexB})");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+                Console.WriteLine($"[InventoryService] SwapItems failed: {ex.Message}");
+                return false;
+            }
+        }
+
         public class MerchantInventoryItem
         {
             public string ItemId { get; set; }
