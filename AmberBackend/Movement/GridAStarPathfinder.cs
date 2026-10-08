@@ -1,14 +1,16 @@
 ﻿using AmberBackend.Movement;
+using AmberBackend.Zones;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
 public class GridAStarPathfinder
 {
-    private readonly TilemapRepository _tilemaps;
-    public GridAStarPathfinder(TilemapRepository t) { _tilemaps = t; }
+    // No more TilemapRepository dependency - walkability is passed per-call
 
-    public List<TilePosition> FindPath(TilePosition start, TilePosition target)
+    public GridAStarPathfinder() { }
+
+    public List<TilePosition> FindPath(TilePosition start, TilePosition target, ZoneWalkability walkability)
     {
         var open = new List<Node>();
         var closed = new HashSet<(int, int)>();
@@ -27,7 +29,7 @@ public class GridAStarPathfinder
             foreach (var npos in Neigh(current.Pos))
             {
                 if (closed.Contains((npos.X, npos.Y))) continue;
-                if (!_tilemaps.IsWalkable(npos)) continue;
+                if (walkability != null && !walkability.IsWalkable(npos)) continue;
 
                 int g = current.G + 1;
                 var existing = open.FirstOrDefault(n => n.Pos.X == npos.X && n.Pos.Y == npos.Y);

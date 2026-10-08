@@ -40,7 +40,8 @@ namespace AmberBackend.AI.Actions
             {
                 _currentPath = context.Pathfinder.FindPath(
                     context.CurrentPosition,
-                    context.TargetPosition
+                    context.TargetPosition,
+                    context.MovementService.GetWalkability()
                 );
 
                 _lastTargetPosition = new TilePosition(context.TargetPosition.X, context.TargetPosition.Y);

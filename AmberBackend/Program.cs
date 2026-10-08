@@ -25,7 +25,7 @@ public class Program
         string connectionString = $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPassword}";
 
         var tilemaps = new TilemapRepository("Resources/Tilemaps");
-        var pathfinder = new GridAStarPathfinder(tilemaps);
+        var pathfinder = new GridAStarPathfinder();
 
         var database = new PlayerDatabase(dbHost, dbPort, dbName, dbUser, dbPassword);
         var playerService = new PlayerService(database);

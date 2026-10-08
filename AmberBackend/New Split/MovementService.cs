@@ -173,6 +173,11 @@ public class MovementService
         //Console.WriteLine($"[MovementService] {entityId} now facing {facing}");
     }
 
+    public AmberBackend.Zones.ZoneWalkability GetWalkability()
+    {
+        return _walkability;
+    }
+
     private class EntityState
     {
         public string EntityId { get; set; }

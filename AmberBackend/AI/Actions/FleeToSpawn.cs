@@ -27,7 +27,8 @@ namespace AmberBackend.AI.Actions
             {
                 _fleePath = context.Pathfinder.FindPath(
                     context.CurrentPosition,
-                    context.SpawnPosition
+                    context.TargetPosition,
+                    context.MovementService.GetWalkability()
                 );
 
                 if (_fleePath == null || _fleePath.Count == 0)
