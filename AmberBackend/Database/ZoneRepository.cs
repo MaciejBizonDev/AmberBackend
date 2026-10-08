@@ -23,31 +23,6 @@ namespace AmberBackend.Database
         // ZONES
         // ============================================================
 
-        public List<ZoneDefinition> LoadAllZones()
-        {
-            var zones = new List<ZoneDefinition>();
-
-            using var conn = new NpgsqlConnection(_connectionString);
-            conn.Open();
-
-            using var cmd = new NpgsqlCommand(
-                "SELECT zone_id, display_name, tilemap_path FROM zones",
-                conn);
-            using var reader = cmd.ExecuteReader();
-
-            while (reader.Read())
-            {
-                zones.Add(new ZoneDefinition
-                {
-                    ZoneId = reader.GetString(0),
-                    Name = reader.GetString(1),
-                    TilemapPath = reader.GetString(2)
-                });
-            }
-
-            Console.WriteLine($"[ZoneRepository] Loaded {zones.Count} zones");
-            return zones;
-        }
 
         // ============================================================
         // NPCs
@@ -169,6 +144,59 @@ namespace AmberBackend.Database
             catch (Exception ex)
             {
                 Console.WriteLine($"[ZoneRepository] Failed to parse tile positions: {ex.Message}");
+            }
+            return list;
+        }
+
+        public List<ZoneDefinition> LoadAllZones()
+        {
+            var zones = new List<ZoneDefinition>();
+
+            using var conn = new NpgsqlConnection(_connectionString);
+            conn.Open();
+
+            using var cmd = new NpgsqlCommand(
+                "SELECT zone_id, display_name, tilemap_path, min_x, min_y, max_x, max_y, obstacle_tiles FROM zones",
+                conn);
+            using var reader = cmd.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var obstacleJson = reader.IsDBNull(7) ? "[]" : reader.GetString(7);
+
+                zones.Add(new ZoneDefinition
+                {
+                    ZoneId = reader.GetString(0),
+                    Name = reader.GetString(1),
+                    TilemapPath = reader.GetString(2),
+                    MinX = reader.GetInt32(3),
+                    MinY = reader.GetInt32(4),
+                    MaxX = reader.GetInt32(5),
+                    MaxY = reader.GetInt32(6),
+                    ObstacleTiles = ParseObstacles(obstacleJson)
+                });
+            }
+
+            Console.WriteLine($"[ZoneRepository] Loaded {zones.Count} zones");
+            return zones;
+        }
+
+        private List<(int x, int y)> ParseObstacles(string json)
+        {
+            var list = new List<(int x, int y)>();
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                foreach (var element in doc.RootElement.EnumerateArray())
+                {
+                    int x = element.GetProperty("x").GetInt32();
+                    int y = element.GetProperty("y").GetInt32();
+                    list.Add((x, y));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ZoneRepository] Failed to parse obstacles: {ex.Message}");
             }
             return list;
         }

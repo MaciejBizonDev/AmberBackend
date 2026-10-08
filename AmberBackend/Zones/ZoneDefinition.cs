@@ -12,6 +12,12 @@ namespace AmberBackend.Zones
         public List<TilePosition> SpawnPoints { get; set; } = new List<TilePosition>();
         public List<NpcSpawnPoint> NpcSpawns { get; set; } = new List<NpcSpawnPoint>();
 
+        public int MinX { get; set; }
+        public int MinY { get; set; }
+        public int MaxX { get; set; }
+        public int MaxY { get; set; }
+        public List<(int x, int y)> ObstacleTiles { get; set; } = new List<(int x, int y)>();
+
         public static ZoneDefinition TestZone => new ZoneDefinition
         {
             ZoneId = "test_zone",

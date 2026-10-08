@@ -53,7 +53,13 @@ namespace AmberBackend.Zones
             _tilemaps = tilemaps;
             _pathfinder = pathfinder;
 
-            MovementService = new MovementService(tilemaps);
+            var walkability = new ZoneWalkability(
+                definition.MinX, definition.MinY,
+                definition.MaxX, definition.MaxY,
+                definition.ObstacleTiles
+            );
+
+            MovementService = new MovementService(walkability);
             NPCService = new NPCService(tilemaps, pathfinder);
             CombatService = new CombatService(tilemaps, MovementService);
 

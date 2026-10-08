@@ -8,7 +8,7 @@ using System.Net.WebSockets;
 
 public class MovementService
 {
-    private readonly TilemapRepository _tilemaps;
+    private readonly AmberBackend.Zones.ZoneWalkability _walkability;
     private readonly Dictionary<string, EntityState> _entities = new();
     private WebSocketServer _webSocketServer;
     private string _zoneId;
@@ -17,9 +17,9 @@ public class MovementService
     public event Action<string, TilePosition, string> OnPositionCorrected;
     public event Action<string> OnEntityRemoved;
     private readonly Dictionary<string, Direction> _entityFacing = new();
-    public MovementService(TilemapRepository tilemaps)
+    public MovementService(AmberBackend.Zones.ZoneWalkability walkability)
     {
-        _tilemaps = tilemaps;
+        _walkability = walkability;
     }
 
     public void SetBroadcaster(WebSocketServer webSocketServer, string zoneId)
@@ -137,15 +137,14 @@ public class MovementService
         return snapshot;
     }
 
-    // NEW: Get walkability data for client sync
     public WalkabilityData GetWalkabilityData()
     {
-        return _tilemaps.GetWalkabilityData();
+        return _walkability.GetWalkabilityData();
     }
 
     private bool IsWalkable(TilePosition position)
     {
-        return _tilemaps.IsWalkable(position);
+        return _walkability.IsWalkable(position);
     }
 
     public Direction GetEntityFacing(string entityId)
