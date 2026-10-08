@@ -58,6 +58,7 @@ namespace AmberBackend.Zones
                 definition.MaxX, definition.MaxY,
                 definition.ObstacleTiles
             );
+            Console.WriteLine($"[Zone:{ZoneId}] Bounds from definition: ({definition.MinX},{definition.MinY}) to ({definition.MaxX},{definition.MaxY}), obstacles={definition.ObstacleTiles.Count}");
 
             MovementService = new MovementService(walkability);
             NPCService = new NPCService(tilemaps, pathfinder);
