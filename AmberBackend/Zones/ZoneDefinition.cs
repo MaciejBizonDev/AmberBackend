@@ -9,6 +9,9 @@ namespace AmberBackend.Zones
         public string ZoneId { get; set; }
         public string Name { get; set; }
         public string TilemapPath { get; set; }
+        public string ZoneType { get; set; } = "world";
+        public int? WorldGridX { get; set; }
+        public int? WorldGridY { get; set; }
         public List<TilePosition> SpawnPoints { get; set; } = new List<TilePosition>();
         public List<NpcSpawnPoint> NpcSpawns { get; set; } = new List<NpcSpawnPoint>();
 

@@ -66,16 +66,15 @@ public class Program
         foreach (var zoneDef in zoneDefinitions)
         {
             zoneManager.CreateZone(zoneDef);  // NPCs + portals loaded inside CreateZone
+                                              // After the zone creation loop, temporary Phase A verification:
+            Console.WriteLine($"[GridTest] West of test_zone: {zoneManager.GetNeighbor("test_zone", ZoneManager.GridDirection.West)}");
+            Console.WriteLine($"[GridTest] East of west_zone: {zoneManager.GetNeighbor("west_zone", ZoneManager.GridDirection.East)}");
         }
 
         database.CleanupOldPlayers(daysInactive: 30);
         Console.WriteLine($"[Database] Total players: {database.GetPlayerCount()}");
         Console.WriteLine($"[Database] Active (7 days): {database.GetActivePlayerCount(7)}");
 
-        Console.WriteLine("=== Zone-Based MMORPG Server ===");
-        Console.WriteLine($"Active zones: test_zone, town_1");
-        Console.WriteLine($"Portals: test_zone(10,-5) <-> town_1(15,14)");
-        Console.WriteLine("====================================");
 
         var wsTask = wsServer.StartAsync(cts.Token);
 

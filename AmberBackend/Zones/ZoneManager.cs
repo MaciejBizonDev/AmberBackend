@@ -17,6 +17,10 @@ namespace AmberBackend.Zones
         private readonly Dictionary<string, EnemyTemplate> _enemyTemplates;
         private WebSocketServer _webSocketServer;
         private readonly ZoneRepository _zoneRepository;
+        public const int ZONE_SIZE = 100;
+        public enum GridDirection { North, South, East, West }
+        private readonly Dictionary<(int x, int y), string> _worldGrid = new();
+        private readonly Dictionary<string, (int x, int y)> _zoneGridPositions = new();
 
 
         public ZoneManager(TilemapRepository tilemaps, GridAStarPathfinder pathfinder, EnemyRepository enemyRepository, ZoneRepository zoneRepository)
@@ -65,7 +69,42 @@ namespace AmberBackend.Zones
             _zones[definition.ZoneId] = zone;
             zone.Start();
             Console.WriteLine($"[ZoneManager] Created zone: {definition.ZoneId}");
+            if (definition.ZoneType == "world" && definition.WorldGridX.HasValue && definition.WorldGridY.HasValue)
+            {
+                var pos = (definition.WorldGridX.Value, definition.WorldGridY.Value);
+                _worldGrid[pos] = definition.ZoneId;
+                _zoneGridPositions[definition.ZoneId] = pos;
+                Console.WriteLine($"[ZoneManager] Registered {definition.ZoneId} at world grid ({pos.Item1},{pos.Item2})");
+            }
             return zone;
+        }
+
+        /// <summary>
+        /// Get the zone adjacent to the given zone in a direction (null if none / not a world zone).
+        /// </summary>
+        public string GetNeighbor(string zoneId, GridDirection direction)
+        {
+            if (!_zoneGridPositions.TryGetValue(zoneId, out var pos))
+                return null; // not a world zone or unknown
+
+            var neighborPos = direction switch
+            {
+                GridDirection.North => (pos.x, pos.y + 1),
+                GridDirection.South => (pos.x, pos.y - 1),
+                GridDirection.East => (pos.x + 1, pos.y),
+                GridDirection.West => (pos.x - 1, pos.y),
+                _ => pos
+            };
+
+            return _worldGrid.TryGetValue(neighborPos, out var neighborId) ? neighborId : null;
+        }
+
+        /// <summary>
+        /// Get a world zone's grid position (null if not a world zone).
+        /// </summary>
+        public (int x, int y)? GetGridPosition(string zoneId)
+        {
+            return _zoneGridPositions.TryGetValue(zoneId, out var pos) ? pos : null;
         }
 
         public Zone GetZone(string zoneId)

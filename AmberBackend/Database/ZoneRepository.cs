@@ -156,7 +156,7 @@ namespace AmberBackend.Database
             conn.Open();
 
             using var cmd = new NpgsqlCommand(
-                "SELECT zone_id, display_name, tilemap_path, min_x, min_y, max_x, max_y, obstacle_tiles FROM zones",
+                "SELECT zone_id, display_name, tilemap_path, min_x, min_y, max_x, max_y, obstacle_tiles, zone_type, world_grid_x, world_grid_y FROM zones",
                 conn);
             using var reader = cmd.ExecuteReader();
 
@@ -173,7 +173,10 @@ namespace AmberBackend.Database
                     MinY = reader.GetInt32(4),
                     MaxX = reader.GetInt32(5),
                     MaxY = reader.GetInt32(6),
-                    ObstacleTiles = ParseObstacles(obstacleJson)
+                    ObstacleTiles = ParseObstacles(obstacleJson),
+                    ZoneType = reader.IsDBNull(8) ? "world" : reader.GetString(8),
+                    WorldGridX = reader.IsDBNull(9) ? (int?)null : reader.GetInt32(9),
+                    WorldGridY = reader.IsDBNull(10) ? (int?)null : reader.GetInt32(10)
                 });
             }
 
